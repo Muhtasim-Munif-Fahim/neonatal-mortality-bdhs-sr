@@ -1,0 +1,20 @@
+# Pinned to a verified-working set (Python 3.11-3.13). Install into a fresh venv:
+#   python -m venv .venv
+#   .venv\Scripts\activate        (Windows)   |   source .venv/bin/activate  (mac/Linux)
+#   pip install -r requirements.txt
+#
+# These exact versions were used to produce the results in the paper.
+numpy==2.4.6
+pandas==3.0.3
+pyarrow==24.0.0
+pyreadstat==1.3.2
+scikit-learn==1.5.2
+imbalanced-learn==0.12.3
+xgboost==2.1.3
+catboost==1.2.8
+Boruta==0.4.3
+shap==0.49.1
+matplotlib==3.10.3
+seaborn==0.13.2
+scipy==1.15.3
+joblib==1.5.2

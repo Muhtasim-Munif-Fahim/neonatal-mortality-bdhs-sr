@@ -1,0 +1,37 @@
+# --- DHS data: access-controlled, NON-redistributable. Never commit. ---
+data/
+*.DTA
+*.dta
+*.zip
+*.FRQ
+*.FRW
+*.MAP
+*.DCT
+*.DO
+
+# --- generated outputs ---
+results/
+figures/
+*.parquet
+*.pkl
+*.joblib
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+
+# --- local manuscript and project-management material (not part of the public code release) ---
+manuscript/
+HANDOFF.md
+METHODOLOGY_REVIEW.md
+catboost_info/
+.release-venv/
+.release-*.out
+.release-*.err
+.release-*.log
