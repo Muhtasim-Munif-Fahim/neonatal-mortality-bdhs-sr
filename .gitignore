@@ -32,6 +32,7 @@ HANDOFF.md
 METHODOLOGY_REVIEW.md
 catboost_info/
 .release-venv/
+.sr-verify-venv/
 .release-*.out
 .release-*.err
 .release-*.log

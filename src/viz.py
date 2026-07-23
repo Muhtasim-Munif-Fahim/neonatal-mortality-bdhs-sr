@@ -27,6 +27,9 @@ def save(fig, name: str):
     from config import FIGURES
     path = FIGURES / name
     fig.savefig(path)
+    # Preserve a vector twin for journal assembly and source-data review.
+    pdf_path = path.with_suffix(".pdf")
+    fig.savefig(pdf_path)
     plt.close(fig)
-    print(f"  figure -> {path}")
+    print(f"  figure -> {path} + {pdf_path.name}")
     return path

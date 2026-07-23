@@ -13,17 +13,23 @@ from matplotlib.patches import FancyBboxPatch
 
 import config
 from src import viz
-from src.harmonize import harmonize
+from src.harmonize import derive_neonatal_outcome, harmonize
 
 
 def _counts():
     raw = pd.read_parquet(config.DATA_INTERIM / "raw_pooled.parquet")
+    age = raw["v008"] - raw["b3"]
+    window = age.ge(config.MIN_FOLLOWUP_MONTHS) & age.lt(config.RECENCY_MONTHS)
+    outcome = derive_neonatal_outcome(raw)
+    invalid_in_window = int((window & outcome.isna()).sum())
     recent = harmonize(module_only=False)      # recency only
     analytic = harmonize(module_only=True)      # recency + module (ML sample)
     tr = analytic[analytic[config.YEAR_COL].isin(config.TRAIN_YEARS)]
     te = analytic[analytic[config.YEAR_COL] == config.TEST_YEAR]
     return {
         "pooled": len(raw),
+        "outside_window": int((~window).sum()),
+        "invalid_outcome": invalid_in_window,
         "recent": len(recent),
         "analytic": len(analytic), "analytic_d": int(analytic[config.TARGET].sum()),
         "train": len(tr), "train_d": int(tr[config.TARGET].sum()),
@@ -35,18 +41,19 @@ def run():
     c = _counts()
     boxes = [
         (f"Pooled Births Recode, 4 BDHS rounds\n{c['pooled']:,} live births", 0.35, 0.90),
-        (f"Live births in the 36 months before survey\n{c['recent']:,}", 0.35, 0.66),
-        (f"Analytic sample: recent births with the\nmaternal-care module\n"
+        (f"Complete neonatal follow-up:\ncalendar-month age 2-35;\nvalid b6 if deceased\n{c['recent']:,}", 0.35, 0.66),
+        (f"Prediction cohort: care-module births\n(2022 random long-questionnaire subsample)\n"
          f"{c['analytic']:,} ({c['analytic_d']} neonatal deaths)", 0.35, 0.40),
     ]
     excl = [
-        (f"Excluded: births >36 months\nbefore survey\n({c['pooled']-c['recent']:,})", 0.80, 0.78),
+        (f"Excluded: outside age 2-35\ncalendar-month window\n({c['outside_window']:,})", 0.80, 0.82),
+        (f"Excluded: unclassifiable\nage at death\n({c['invalid_outcome']:,})", 0.80, 0.70),
         (f"Excluded: maternal-care module\nnot administered\n({c['recent']-c['analytic']:,})",
          0.80, 0.53),
     ]
     splits = [
         (f"Training rounds\n2011, 2014, 2017-18\n{c['train']:,} ({c['train_d']} deaths)", 0.17, 0.12),
-        (f"Test round 2022\n(held out)\n{c['test']:,} ({c['test_d']} deaths)", 0.56, 0.12),
+        (f"Evaluation round 2022\n(excluded from fitting/selection)\n{c['test']:,} ({c['test_d']} deaths)", 0.56, 0.12),
     ]
 
     fig, ax = viz.plt.subplots(figsize=(8, 9))

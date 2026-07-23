@@ -14,10 +14,11 @@ Run: python -m src.checks
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
 import config
-from src.harmonize import harmonize
+from src.harmonize import cohort_counts, derive_neonatal_outcome, harmonize
 from src.preprocess import build_design, clean
 from src.modeling import _pipeline, _smote
 
@@ -31,6 +32,29 @@ def run() -> bool:
         lines.append(f"[{'PASS' if cond else 'FAIL'}] {name}" + (f"  -- {detail}" if detail else ""))
 
     d = build_design()
+
+    # 0. Endpoint boundary and complete follow-up definition
+    boundary = derive_neonatal_outcome(pd.DataFrame({
+        "b5": [0, 0, 0, 0, 0], "b6": [127, 128, 129, 199, 999],
+    }))
+    check("neonatal endpoint is exactly days 0-27",
+          boundary.iloc[:3].tolist() == [1, 0, 0]
+          and boundary.iloc[3:].isna().all())
+    h = harmonize()
+    check("all retained births meet conservative complete-follow-up rule",
+          bool(h["age_mo"].ge(config.MIN_FOLLOWUP_MONTHS).all()),
+          f"minimum age_mo={h['age_mo'].min()}")
+    check("survey stratum retained for design-based resampling",
+          bool(h[config.STRATUM_COL].notna().all()),
+          f"strata={h[config.STRATUM_COL].nunique()}")
+    all_recent = harmonize(module_only=False)
+    long_2022 = all_recent[(all_recent[config.YEAR_COL] == config.TEST_YEAR)
+                           & all_recent["questionnaire_type"].eq("long")]
+    module_2022 = h[h[config.YEAR_COL] == config.TEST_YEAR]
+    check("2022 care cohort is the random long-questionnaire subsample",
+          len(long_2022) == len(module_2022)
+          and module_2022["questionnaire_type"].eq("long").all(),
+          f"long={len(long_2022)}, module={len(module_2022)}")
 
     # 1. temporal split
     yrs = set(np.unique(d["year_train"]).tolist())
@@ -61,7 +85,6 @@ def run() -> bool:
           f"max|dp|={np.max(np.abs(p1-p2)):.2e}")
 
     # 5. prevalence sanity (weighted NMR per round within 15-35 / 1000)
-    h = harmonize()
     bad = []
     for yr, sub in h.groupby(config.YEAR_COL):
         nmr = np.average(sub[config.TARGET], weights=sub[config.WEIGHT_COL]) * 1000
@@ -70,7 +93,6 @@ def run() -> bool:
     check("weighted NMR per round in published ballpark (12-40/1000)", not bad, ",".join(bad))
 
     # 6. trend outputs (present only after src.trends has run)
-    import pandas as pd
     t3 = config.RESULTS / "table3_nmr_trend.csv"
     t5 = config.RESULTS / "table5_decomposition.csv"
     if t3.exists() and t5.exists():
@@ -82,8 +104,28 @@ def run() -> bool:
         s = dec["distribution"] + dec["effect"]
         check("decomposition components sum to total change",
               abs(s - dec["total_change"]) < 0.15, f"{s:.1f} vs {dec['total_change']:.1f}")
+        check("trend and primary decomposition use the same 2011/2022 NMR",
+              abs(nmr.iloc[0]["NMR"] - dec["NMR_2011"]) < 0.15
+              and abs(nmr.iloc[-1]["NMR"] - dec["NMR_2022"]) < 0.15,
+              f"trend {nmr.iloc[0]['NMR']}/{nmr.iloc[-1]['NMR']} vs "
+              f"decomp {dec['NMR_2011']}/{dec['NMR_2022']}")
     else:
         lines.append("[SKIP] trend checks (run src.trends first)")
+
+    # Machine-readable cohort definition and requested one-month sensitivity.
+    cohort_rows = []
+    for name, module, min_followup in [
+        ("primary_module", True, config.MIN_FOLLOWUP_MONTHS),
+        ("primary_allrecent", False, config.MIN_FOLLOWUP_MONTHS),
+        ("sensitivity_module_min1", True, 1),
+        ("sensitivity_allrecent_min1", False, 1),
+    ]:
+        counts = cohort_counts(harmonize(module_only=module,
+                                         min_followup_months=min_followup))
+        for year, row in counts.iterrows():
+            cohort_rows.append({"cohort": name, "minimum_age_mo": min_followup,
+                                "survey_year": year, **row.to_dict()})
+    pd.DataFrame(cohort_rows).to_csv(config.RESULTS / "cohort_definition.csv", index=False)
 
     report = "\n".join(lines)
     (config.RESULTS / "verification.txt").write_text(report)

@@ -12,8 +12,10 @@ Produces:
   C. Association shift (predictor x survey-year interactions)    ->        table4_association_shift
   D. Decomposition of the NMR change: distribution vs effect     -> fig9,  table5_decomposition
 
-NMR trend (A) uses the representative all-recent-births sample (harmonize(module_only=
-False)); B/C/D use the module sample (consistent exposure definitions), matching the ML.
+NMR trend (A) and the primary decomposition (D) use the same representative
+all-recent-births, complete-follow-up cohort and the same six non-care
+covariates.  Care coverage and association-shift analyses use the maternal-care
+module; the ten-covariate decomposition is a module-restricted sensitivity.
 
 Run: python -m src.trends
 """
@@ -29,7 +31,7 @@ from src import viz
 from src.harmonize import harmonize
 
 SDG_NMR_TARGET = 12          # SDG-3.2: <=12 neonatal deaths / 1000 live births by 2030
-N_BOOT = 300
+N_BOOT = 1000
 _ROUNDS = [2011, 2014, 2017, 2022]
 
 
@@ -52,12 +54,12 @@ def _wmean(y, w):
 
 
 def _boot_round_indices(df, rng):
-    """Row indices for one bootstrap replicate: resample PSU clusters *within* each round."""
-    years = df[config.YEAR_COL].to_numpy()
+    """Resample PSUs with replacement within survey round and stratum."""
     clusters = df[config.CLUSTER_COL].to_numpy()
+    strata = df[config.STRATUM_COL].to_numpy()
     parts = []
-    for yr in _ROUNDS:
-        sub = np.where(years == yr)[0]
+    for stratum in np.unique(strata):
+        sub = np.where(strata == stratum)[0]
         cl = clusters[sub]
         uniq = np.unique(cl)
         idx_by = {c: sub[cl == c] for c in uniq}
@@ -156,9 +158,18 @@ def _exposures(df: pd.DataFrame) -> pd.DataFrame:
     e["poorest"] = (df["wealth"] == "poorest").astype(float)
     e["rural"] = (df["residence"] == "rural").astype(float)
     e["anc_4plus"] = pd.to_numeric(df["anc_4plus"], errors="coerce")
-    e["facility_delivery"] = (df["delivery_place"] == "facility").astype(float)
+    place = df["delivery_place"]
+    e["facility_delivery"] = pd.Series(
+        np.where(place.isna(), np.nan, place.eq("facility").astype(float)),
+        index=df.index, dtype=float)
     e["skilled_attendant"] = df["skilled_attendant"].astype(float)
     e["csection"] = pd.to_numeric(df["csection"], errors="coerce")
+    # Retain the full module cohort in the care-variable decomposition. A
+    # zero-filled value is interpreted jointly with its explicit missingness
+    # indicator, rather than silently selecting complete cases.
+    for col in ["anc_4plus", "facility_delivery", "skilled_attendant", "csection"]:
+        e[f"{col}_missing"] = e[col].isna().astype(float)
+        e[col] = e[col].fillna(0.0)
     return e
 
 
@@ -190,10 +201,11 @@ def prevalence_trends() -> pd.DataFrame:
         p = _boot_pvalue(np.array(betas))
         rows.append({"exposure": EXPOSURE_LABELS[col],
                      **{f"y{r}": round(prev[r], 1) for r in _ROUNDS},
-                     "change": round(prev[2022] - prev[2011], 1), "trend_p": round(p, 3)})
+                     "change": round(prev[2022] - prev[2011], 1),
+                     "trend_p": p})
     tab = pd.DataFrame(rows)
-    tab["trend_q_bh"] = np.round(
-        false_discovery_control(tab["trend_p"].to_numpy(), method="bh"), 3)
+    tab["trend_q_bh"] = false_discovery_control(tab["trend_p"].to_numpy(), method="bh")
+    tab[["trend_p", "trend_q_bh"]] = tab[["trend_p", "trend_q_bh"]].round(3)
     tab.to_csv(config.RESULTS / "table3b_prevalence.csv", index=False)
     print(f"  B. prevalence trends for {len(tab)} exposures (+BH FDR) -> table3b")
     _fig_prevalence(df, E)
@@ -204,12 +216,15 @@ def _fig_prevalence(df, E):
     yr = df[config.YEAR_COL].to_numpy(float)
     w = df[config.WEIGHT_COL].to_numpy(float)
     fig, ax = viz.plt.subplots(figsize=(8.5, 6))
+    markers = ["o", "s", "^", "D", "v", "P", "X", "<", ">", "h"]
+    linestyles = ["-", "--", "-.", ":", "-", "--", "-.", ":", "-", "--"]
     for i, col in enumerate(EXPOSURE_LABELS):
         x = E[col].to_numpy(float)
         ok = np.isfinite(x)
         prev = [100 * _wmean(x[ok & (yr == r)], w[ok & (yr == r)]) for r in _ROUNDS]
-        ax.plot(_ROUNDS, prev, "o-", color=viz.PALETTE[i % len(viz.PALETTE)],
-                lw=1.6, label=EXPOSURE_LABELS[col])
+        ax.plot(_ROUNDS, prev, marker=markers[i], linestyle=linestyles[i],
+                color=viz.PALETTE[i % len(viz.PALETTE)], lw=1.6,
+                label=EXPOSURE_LABELS[col])
     ax.set(xlabel="BDHS survey year", ylabel="weighted prevalence (%)",
            title="Risk-factor / coverage prevalence trends, 2011-2022")
     ax.set_xticks(_ROUNDS)
@@ -248,10 +263,12 @@ def association_shift() -> pd.DataFrame:
                      "OR_2011": round(main_or, 2),
                      "OR_ratio_per_year": round(inter_or, 3),
                      "direction": "strengthening" if inter_or > 1 else "weakening",
-                     "interaction_p": round(p, 3)})
+                     "interaction_p": p})
     tab = pd.DataFrame(rows)
-    tab["interaction_q_bh"] = np.round(
-        false_discovery_control(tab["interaction_p"].to_numpy(), method="bh"), 3)
+    tab["interaction_q_bh"] = false_discovery_control(
+        tab["interaction_p"].to_numpy(), method="bh")
+    tab[["interaction_p", "interaction_q_bh"]] = tab[
+        ["interaction_p", "interaction_q_bh"]].round(3)
     tab = tab.sort_values("interaction_p")
     tab.to_csv(config.RESULTS / "table4_association_shift.csv", index=False)
     print(f"  C. association-shift for {len(tab)} predictors (+BH FDR) -> table4")
@@ -262,6 +279,8 @@ def association_shift() -> pd.DataFrame:
 # D. Decomposition of the NMR change (distribution vs effect)
 # --------------------------------------------------------------------------- #
 _DECOMP_COLS = list(EXPOSURE_LABELS)
+_CARE_MISSING_COLS = [f"{c}_missing" for c in
+                      ["anc_4plus", "facility_delivery", "skilled_attendant", "csection"]]
 # Sensitivity: drop the care variables that are confounded by indication
 # (facility/skilled/C-section/ANC), keeping only less-confounded socio-demographic
 # + infant composition -> a cleaner distribution-vs-effect read.
@@ -284,9 +303,15 @@ def _decomp_once(Xa, wa, Xb, wb, ya, yb):
     return np.array([Na * 1000, Nb * 1000, (Nb - Na) * 1000, dist * 1000, effect * 1000])
 
 
-def decomposition(cols=None, tag="all") -> pd.DataFrame:
-    cols = cols or _DECOMP_COLS
-    df = harmonize(module_only=True)
+def decomposition(cols=None, tag="primary", module_only=False) -> pd.DataFrame:
+    """Symmetric nonlinear decomposition for a declared cohort/covariate set.
+
+    The ``effect`` component is a residual coefficient-associated change.  It
+    is not a causal mechanism and can absorb unmeasured composition,
+    confounding, model misspecification, and coefficient change.
+    """
+    cols = cols or _NONCARE_COLS
+    df = harmonize(module_only=module_only)
     E = _exposures(df)
     keep = E[cols].notna().all(axis=1).to_numpy()
     df, E = df[keep], E[keep]
@@ -320,34 +345,40 @@ def decomposition(cols=None, tag="all") -> pd.DataFrame:
         "ci_low": np.round(ci[0], 1),
         "ci_high": np.round(ci[1], 1),
     })
+    tab["bootstrap_successes"] = len(boots)
+    tab["bootstrap_failures"] = N_BOOT - len(boots)
     total = point[2]
     tab["pct_of_change"] = [np.nan, np.nan, 100.0,
                             round(100 * point[3] / total, 1),
                             round(100 * point[4] / total, 1)]
-    fname = "table5_decomposition.csv" if tag == "all" else f"table5b_decomposition_{tag}.csv"
+    fname = "table5_decomposition.csv" if tag == "primary" else f"table5b_decomposition_{tag}.csv"
     tab.to_csv(config.RESULTS / fname, index=False)
     print(f"  D[{tag}]. NMR change {total:+.1f}/1000 = distribution {point[3]:+.1f} "
           f"+ effect {point[4]:+.1f}  ({len(cols)} vars)")
-    _fig_decomposition(point, tag)
+    _fig_decomposition(point, ci, tag)
     return tab
 
 
-def _fig_decomposition(point, tag="all"):
+def _fig_decomposition(point, ci, tag="primary"):
     _, _, total, dist, effect = point
     fig, ax = viz.plt.subplots(figsize=(6.5, 5))
-    bars = ax.bar(["distribution\n(exposure change)", "effect\n(coefficient change)",
-                   "total change"],
-                  [dist, effect, total],
+    values = np.array([dist, effect, total])
+    lows = np.array([ci[0, 3], ci[0, 4], ci[0, 2]])
+    highs = np.array([ci[1, 3], ci[1, 4], ci[1, 2]])
+    bars = ax.bar(["observed\ncomposition",
+                   "residual\ncoefficient-associated",
+                   "total\nchange"], values,
+                  yerr=np.vstack([values - lows, highs - values]), capsize=4,
                   color=[viz.PALETTE[2], viz.PALETTE[1], viz.PALETTE[0]])
-    for bar, val in zip(bars, [dist, effect, total]):
+    for bar, val in zip(bars, values):
         ax.annotate(f"{val:+.1f}", (bar.get_x() + bar.get_width() / 2, val),
                     textcoords="offset points", xytext=(0, 6 if val >= 0 else -14),
                     ha="center", fontsize=10)
     ax.axhline(0, color="k", lw=0.8)
-    suffix = "" if tag == "all" else f" ({tag.replace('_', ' ')} composition only)"
+    suffix = "" if tag == "primary" else " (care-module sensitivity)"
     ax.set(ylabel="contribution to NMR change (per 1000)",
            title=f"Decomposition of the 2011->2022 NMR decline{suffix}")
-    fname = "fig9_decomposition.png" if tag == "all" else f"fig9b_decomposition_{tag}.png"
+    fname = "fig9_decomposition.png" if tag == "primary" else f"fig9b_decomposition_{tag}.png"
     viz.save(fig, fname)
 
 
@@ -355,8 +386,8 @@ def run():
     nmr_trend()
     prevalence_trends()
     association_shift()
-    decomposition(_DECOMP_COLS, "all")
-    decomposition(_NONCARE_COLS, "noncare")
+    decomposition(_NONCARE_COLS, "primary", module_only=False)
+    decomposition(_DECOMP_COLS + _CARE_MISSING_COLS, "care_module", module_only=True)
 
 
 if __name__ == "__main__":

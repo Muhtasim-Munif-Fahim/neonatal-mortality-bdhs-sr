@@ -43,31 +43,38 @@ ROUNDS: dict[int, dict[str, str]] = {
     2022: {"zip": "BD_2022_DHS_07192026_1239_236549.zip", "dta": "BDBR81FL.DTA"},
 }
 
-# Temporal validation split: train on the past, test on the held-out future survey.
+# Temporal evaluation split: fit/select on past rounds; evaluate in 2022.
 TRAIN_YEARS = [2011, 2014, 2017]
 TEST_YEAR = 2022
 
 # Analytic sample: births in the N months before the survey (maternal-care module
 # is only collected for recent births). 36 = last 3 years (DHS standard).
 RECENCY_MONTHS = 36
+# CMC month differences do not contain interview/birth day.  A difference of
+# one calendar month can therefore represent fewer than 28 completed days;
+# two months is the conservative cross-round threshold for complete neonatal
+# outcome ascertainment.  The one-month rule is retained only as a sensitivity.
+MIN_FOLLOWUP_MONTHS = 2
 
 # Canonical column names produced by harmonize.py.
 TARGET = "neonatal_death"
 YEAR_COL = "survey_year"
 CLUSTER_COL = "cluster"       # from v001, made unique per round
+STRATUM_COL = "stratum"       # from v022, made unique per round
 WEIGHT_COL = "weight"         # normalized survey weight (mean 1 within round)
 # Non-predictor bookkeeping columns carried alongside the features.
-META_COLS = [YEAR_COL, CLUSTER_COL, WEIGHT_COL, "age_mo", TARGET]
+META_COLS = [YEAR_COL, CLUSTER_COL, STRATUM_COL, WEIGHT_COL, "age_mo", "age_completed_mo",
+             "questionnaire_type", TARGET]
 
 # --------------------------------------------------------------------------- #
 # Variable groups (DHS recode names). Harmonisation maps these to a common
 # scheme across rounds in src/harmonize.py.
 # --------------------------------------------------------------------------- #
 # Survey-design columns (needed for weights / clustering, NOT used as predictors).
-DESIGN_VARS = ["v001", "v005", "v021", "v022", "v023", "v024", "v025"]
+DESIGN_VARS = ["v001", "v005", "v021", "v022", "v023", "v024", "v025", "sqtype"]
 
 # Columns required to build the outcome + the recency restriction.
-OUTCOME_SOURCE_VARS = ["b3", "b5", "b6", "b7", "v008", "v011"]
+OUTCOME_SOURCE_VARS = ["b3", "b5", "b6", "b7", "b19", "v008", "v011"]
 
 # Candidate predictor source columns (subset kept if present in a given round).
 PREDICTOR_SOURCE_VARS = [
@@ -91,6 +98,9 @@ PREDICTOR_SOURCE_VARS = [
     "m17",     # caesarean section
     "m3a",     # assistance at delivery: doctor
     "m3b",     # assistance at delivery: nurse/midwife (with m3a -> skilled attendant)
+    "m3c",     # assistance: family welfare visitor
+    "m3d",     # assistance: community skilled birth attendant
+    "m3e",     # assistance: medical assistant / SACMO
     # household / SES
     "v190",    # wealth index (quintile)
     "v130",    # religion

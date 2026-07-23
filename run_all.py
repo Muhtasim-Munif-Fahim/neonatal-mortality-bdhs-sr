@@ -16,13 +16,16 @@ import time
 
 
 def main(force: bool = False) -> None:
-    from src import (checks, descriptives, evaluate, features_boruta, flow_fig,
+    from src import (checks, descriptives, evaluate, export_aggregate, features_boruta, flow_fig,
                      harmonize, interpret_shap, load, modeling, preprocess, robustness,
                      trends, workflow_fig)
 
     steps = [
         ("00 load",        lambda: load.load_all(force=force)),
-        ("01 harmonize",   lambda: harmonize.harmonize(force=force)),
+        ("01 harmonize",   lambda: (
+            harmonize.harmonize(force=force),
+            harmonize.harmonize(force=force, module_only=False),
+        )),
         ("02 preprocess",  lambda: preprocess.build_design(force=force)),
         ("03 boruta",      lambda: features_boruta.run(force=force)),
         ("04 modeling",    lambda: modeling.train_all(force=force)),
@@ -34,6 +37,7 @@ def main(force: bool = False) -> None:
         ("   fig1",        lambda: workflow_fig.run()),
         ("   flow",        lambda: flow_fig.run()),
         ("   checks",      lambda: checks.run()),
+        ("   aggregate",   lambda: export_aggregate.run()),
     ]
     for name, fn in steps:
         print(f"\n{'='*66}\n>>> {name}\n{'='*66}")

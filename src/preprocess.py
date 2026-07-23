@@ -49,7 +49,7 @@ _CLIP = {
     "birth_interval": (0, 300), "anc_visits": (0, 20),
 }
 
-_VIF_THRESHOLD = 10.0   # numeric features above this are pruned (reported)
+_VIF_THRESHOLD = 10.0   # numeric features above this are flagged, not removed
 
 
 # --------------------------------------------------------------------------- #
@@ -84,7 +84,7 @@ def _numeric_block(df: pd.DataFrame) -> list[str]:
 
 
 def report_multicollinearity(train: pd.DataFrame) -> list[str]:
-    """VIF on the numeric block (train only). Returns features to drop (VIF>thr)."""
+    """Report VIF on the numeric block (train only); no feature is removed."""
     cols = _numeric_block(train)
     X = train[cols].apply(pd.to_numeric, errors="coerce")
     X = X.fillna(X.median(numeric_only=True))
@@ -100,9 +100,10 @@ def report_multicollinearity(train: pd.DataFrame) -> list[str]:
                .sort_values("VIF", ascending=False))
     out = config.RESULTS / "multicollinearity_vif.csv"
     vif_tab.to_csv(out, index=False)
-    drop = vif_tab.loc[vif_tab["VIF"] > _VIF_THRESHOLD, "feature"].tolist()
-    print(f"  VIF report -> {out}; prune (VIF>{_VIF_THRESHOLD}): {drop or 'none'}")
-    return drop
+    flagged = vif_tab.loc[vif_tab["VIF"] > _VIF_THRESHOLD, "feature"].tolist()
+    print(f"  VIF report -> {out}; flagged only (VIF>{_VIF_THRESHOLD}): "
+          f"{flagged or 'none'}")
+    return flagged
 
 
 # --------------------------------------------------------------------------- #
@@ -134,8 +135,11 @@ def build_design(force: bool = False) -> dict:
     test_mask = df[config.YEAR_COL] == config.TEST_YEAR
     train, test = df[train_mask].copy(), df[test_mask].copy()
 
-    drop = report_multicollinearity(train)
-    numeric_cols = [c for c in _numeric_block(df) if c not in drop]
+    # Report collinearity, but do not use it as a prediction-feature filter.
+    # VIF concerns coefficient precision rather than predictive validity, and
+    # a fixed candidate set is needed across chronological validation windows.
+    report_multicollinearity(train)
+    numeric_cols = _numeric_block(df)
     nominal_cols = list(NOMINAL)
 
     pre = make_preprocessor(numeric_cols, nominal_cols)

@@ -11,14 +11,14 @@ from src import viz
 
 BOXES = [
     ("4 BDHS Births Recode files\n(2011, 2014, 2017-18, 2022)", 0.5, 0.94, viz.PALETTE[0]),
-    ("Harmonise across rounds\n+ derive neonatal death (b7=0)", 0.5, 0.82, viz.PALETTE[2]),
-    ("Restrict: births <36 mo\n+ maternal-care module", 0.5, 0.70, viz.PALETTE[2]),
-    ("Preprocess: impute, encode,\nmulticollinearity (VIF)", 0.5, 0.58, viz.PALETTE[2]),
-    ("Boruta feature selection\n(training rounds only)", 0.5, 0.46, viz.PALETTE[1]),
-    ("Grouped CV (by PSU) + SMOTE\ninside folds -> tune 7 models\nLR DT RF SVM KNN XGB CatBoost",
+    ("Outcome: death on days 0-27\n(b6=100-127); invalid ages excluded", 0.5, 0.82, viz.PALETTE[2]),
+    ("Complete follow-up: age 2-35 mo\n+ care-module/2022 long questionnaire", 0.5, 0.70, viz.PALETTE[2]),
+    ("Forward selection: 2011->2014 and\n2011+2014->2017-18", 0.5, 0.58, viz.PALETTE[2]),
+    ("Fold-local imputation/encoding\n+ PSU-grouped inner tuning", 0.5, 0.46, viz.PALETTE[1]),
+    ("Rank 7 pipelines by mean AP;\nnear tie -> Brier -> simplicity\nselection uses 2011-2017/18 only",
      0.5, 0.32, viz.PALETTE[5]),
-    ("Temporal test on 2022:\nROC/PR-AUC, Brier, calibration, DCA", 0.5, 0.17, viz.PALETTE[4]),
-    ("SHAP interpretation +\ntemporal stability of signature", 0.5, 0.05, viz.PALETTE[3]),
+    ("Retrospective temporal evaluation on 2022:\nAP/AUROC, Brier, calibration", 0.5, 0.17, viz.PALETTE[4]),
+    ("Exploratory SHAP and subgroup\nanalyses; DCA in supplement", 0.5, 0.05, viz.PALETTE[3]),
 ]
 
 

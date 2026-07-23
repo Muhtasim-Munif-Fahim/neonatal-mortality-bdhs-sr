@@ -2,9 +2,11 @@
 Step 01 -- harmonise the pooled raw births into a common analytic table.
 
 What it does:
-  * derives the outcome  neonatal_death = (b5==0) & (b7==0)  [death in the first
-    completed month of life],
-  * restricts to live births in the last RECENCY_MONTHS before each survey,
+  * derives the outcome exactly as death on completed days 0--27 (DHS b6
+    codes 100--127), excluding deaths with an invalid/missing age-at-death code,
+  * restricts to live births with conservative complete neonatal follow-up in
+    calendar-month differences 2--35
+    before each survey,
   * recodes every predictor to a scheme that is CONSISTENT across the four DHS
     phases (two variables -- cooking fuel v161 and region v024 -- are mapped by
     their Stata value LABEL because their numeric codes were renumbered between
@@ -69,10 +71,68 @@ def _division_classifier(label: str) -> str:
     return np.nan
 
 
+def derive_neonatal_outcome(raw: pd.DataFrame) -> pd.Series:
+    """Return a nullable neonatal-death indicator from DHS ``b5``/``b6``.
+
+    DHS ``b6`` encodes age at death as 100 + days, 200 + months, or
+    300 + years.  Neonatal deaths are therefore exactly codes 100--127.
+    Deaths on days 28--29 (128--129) and later valid ages are non-neonatal.
+    A dead child with a missing or non-DHS age code cannot be classified and
+    is returned as ``NA`` so the record can be excluded from the outcome
+    cohort.  Living children do not require an age-at-death code.
+    """
+    status = pd.to_numeric(raw["b5"], errors="coerce")
+    age_code = pd.to_numeric(raw["b6"], errors="coerce")
+    outcome = pd.Series(pd.NA, index=raw.index, dtype="Int64")
+    outcome.loc[status == 1] = 0
+    dead = status == 0
+    # DHS reserves last-two-digit values above 90 for special/unknown
+    # responses (for example 199 = days, number missing).  Only exact numeric
+    # ages are classifiable here.
+    valid_age = (age_code.between(100, 190, inclusive="both")
+                 | age_code.between(201, 290, inclusive="both")
+                 | age_code.between(301, 390, inclusive="both"))
+    outcome.loc[dead & valid_age] = age_code.loc[dead & valid_age].between(
+        100, 127, inclusive="both"
+    ).astype(int)
+    return outcome
+
+
+def complete_followup_mask(age_mo: pd.Series,
+                           min_months: int = config.MIN_FOLLOWUP_MONTHS) -> pd.Series:
+    """Eligibility for a fully observed 28-day outcome within the 3-year window."""
+    age = pd.to_numeric(age_mo, errors="coerce")
+    return age.ge(min_months) & age.lt(config.RECENCY_MONTHS)
+
+
+def cohort_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """Unweighted per-round cohort arithmetic used by tests and verification."""
+    grouped = df.groupby(config.YEAR_COL, sort=True)[config.TARGET]
+    return pd.DataFrame({"n": grouped.size(), "deaths": grouped.sum().astype(int)})
+
+
+def recode_anc_4plus(anc: pd.Series) -> pd.Series:
+    """ANC 4+ indicator that preserves missing exposure status."""
+    values = pd.to_numeric(anc, errors="coerce")
+    return pd.Series(np.where(values.isna(), pd.NA, values >= 4),
+                     index=anc.index, dtype="Int64")
+
+
+def derive_skilled_attendant(raw: pd.DataFrame) -> pd.Series:
+    """Any survey-labelled skilled delivery cadre, preserving missingness."""
+    cols = [c for c in ["m3a", "m3b", "m3c", "m3d", "m3e"] if c in raw]
+    assistance = raw[cols].apply(pd.to_numeric, errors="coerce")
+    any_recorded = assistance.notna().any(axis=1)
+    skilled = assistance.fillna(0).eq(1).any(axis=1)
+    return pd.Series(np.where(any_recorded, skilled, pd.NA),
+                     index=raw.index, dtype="Int64")
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
+def harmonize(force: bool = False, module_only: bool = True,
+              min_followup_months: int = config.MIN_FOLLOWUP_MONTHS) -> pd.DataFrame:
     """Harmonised analytic table.
 
     module_only=True  (default, used by the ML pipeline): recent births WITH the
@@ -80,10 +140,17 @@ def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
     module_only=False (used by trends.py for a representative NMR denominator):
       all recent births regardless of the module.
     """
-    cache = config.DATA_INTERIM / ("analytic.parquet" if module_only
-                                   else "analytic_allrecent.parquet")
+    cohort = "analytic" if module_only else "analytic_allrecent"
+    suffix = "" if min_followup_months == config.MIN_FOLLOWUP_MONTHS \
+        else f"_minfollowup{min_followup_months}"
+    cache = config.DATA_INTERIM / f"{cohort}{suffix}.parquet"
     if cache.exists() and not force:
-        return pd.read_parquet(cache)
+        cached = pd.read_parquet(cache)
+        required = set(config.META_COLS) | {config.TARGET, "age_mo"}
+        if required.issubset(cached.columns):
+            return cached
+        missing = sorted(required - set(cached.columns))
+        print(f"  invalidating {cache.name}; missing columns: {missing}")
 
     raw = load_all()
     out = pd.DataFrame(index=raw.index)
@@ -95,11 +162,21 @@ def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
     out[config.CLUSTER_COL] = (
         year.astype(str) + "_" + raw["v001"].astype("Int64").astype(str)
     )
+    out[config.STRATUM_COL] = (
+        year.astype(str) + "_" + raw["v022"].astype("Int64").astype(str)
+    )
     out["age_mo"] = raw["v008"] - raw["b3"]           # months since birth at interview
+    if "b19" in raw:
+        # Day-sensitive completed age, available only in newer DHS rounds.
+        # Retained for follow-up diagnostics, never used as a predictor.
+        out["age_completed_mo"] = pd.to_numeric(raw["b19"], errors="coerce")
+    if "sqtype" in raw:
+        out["questionnaire_type"] = pd.to_numeric(raw["sqtype"], errors="coerce").map(
+            {1: "long", 2: "short"}
+        )
 
     # ---- outcome ---------------------------------------------------------- #
-    # b5==0 -> child died; b7==0 -> died in completed month 0 (first month of life).
-    out[config.TARGET] = ((raw["b5"] == 0) & (raw["b7"] == 0)).astype(int)
+    out[config.TARGET] = derive_neonatal_outcome(raw)
 
     # ---- child predictors ------------------------------------------------- #
     out["sex"] = raw["b4"].map({1: "male", 2: "female"})
@@ -126,15 +203,14 @@ def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
     anc = pd.to_numeric(raw["m14"], errors="coerce")
     anc = anc.where(anc <= 20)                          # 98='don't know' -> NaN
     out["anc_visits"] = anc
-    out["anc_4plus"] = (anc >= 4).astype("Int64")
+    out["anc_4plus"] = recode_anc_4plus(anc)
     m15 = pd.to_numeric(raw["m15"], errors="coerce")
     out["delivery_place"] = np.select(
         [m15.isin([10, 11]), (m15 >= 20) & (m15 < 96)],
         ["home", "facility"], default=None,
     )
     out["csection"] = pd.to_numeric(raw["m17"], errors="coerce").map({0: 0, 1: 1})
-    skilled = (raw["m3a"].fillna(0) == 1) | (raw["m3b"].fillna(0) == 1)
-    out["skilled_attendant"] = skilled.astype(int)
+    out["skilled_attendant"] = derive_skilled_attendant(raw)
 
     # ---- household / SES -------------------------------------------------- #
     out["wealth"] = pd.to_numeric(raw["v190"], errors="coerce").map(
@@ -173,21 +249,27 @@ def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
     wt = pd.to_numeric(raw["v005"], errors="coerce") / 1_000_000.0
     out[config.WEIGHT_COL] = wt / wt.groupby(year).transform("mean")
 
-    # module marker: was the maternal-care module administered for this birth?
+    # Module marker: was the maternal-care module administered for this birth?
+    # In 2022 this is exactly the long-questionnaire subsample, not merely a
+    # most-recent-birth restriction. The standard women's weight (v005) is the
+    # only individual weight supplied and is normalized within survey round.
     out["_module"] = raw["m15"].notna().to_numpy()
 
     # ---- sample restriction ---------------------------------------------- #
     # Births in the last RECENCY_MONTHS AND with the maternal-care module observed
-    # (~ "most recent birth in the last 3 years"). The module restriction makes the
+    # In 2022 this selects the random long-questionnaire household subsample.
+    # The module restriction makes the
     # care variables (ANC, delivery, C-section, attendant) consistently measured
     # across all four rounds, so a temporal model is not fed round-dependent
     # missingness. See docs / plan for the rationale.
     before = len(out)
-    keep = (out["age_mo"] >= 0) & (out["age_mo"] < config.RECENCY_MONTHS)
+    keep = (complete_followup_mask(out["age_mo"], min_followup_months)
+            & out[config.TARGET].notna())
     if module_only:
         keep = keep & out["_module"]
     out = out[keep].drop(columns="_module").copy()
-    print(f"Recency (<{config.RECENCY_MONTHS} mo)"
+    out[config.TARGET] = out[config.TARGET].astype(int)
+    print(f"Complete follow-up ({min_followup_months}-{config.RECENCY_MONTHS - 1} mo)"
           f"{' + care-module' if module_only else ''} filter: "
           f"{before:,} -> {len(out):,} births")
 
@@ -201,6 +283,7 @@ def harmonize(force: bool = False, module_only: bool = True) -> pd.DataFrame:
 def _sanity_checks(df: pd.DataFrame) -> None:
     assert df[config.TARGET].isin([0, 1]).all(), "outcome not binary"
     assert df[config.CLUSTER_COL].notna().all(), "missing cluster id"
+    assert df[config.STRATUM_COL].notna().all(), "missing stratum id"
     # harmonised categoricals should have no unexpected leftovers
     assert set(df["division"].dropna().unique()) <= set(_DIVISION_CANON.values())
     print("Sanity checks passed.")

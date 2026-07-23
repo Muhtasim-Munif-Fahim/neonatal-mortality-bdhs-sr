@@ -1,5 +1,5 @@
 """
-Step 06 -- SHAP interpretability + temporal stability of the risk signature.
+Step 06 -- descriptive SHAP attribution and round-specific profiles.
 
   * Fig 5: SHAP beeswarm + mean|SHAP| bar for the best TREE-based model on 2022.
   * Fig 6: mean|SHAP| per feature computed SEPARATELY within each survey round
@@ -7,7 +7,7 @@ Step 06 -- SHAP interpretability + temporal stability of the risk signature.
            showing which predictors persist vs fade across a decade.
 
 SHAP uses the best tree-based model (TreeExplainer is exact and fast). If the
-overall best model is not tree-based, we still explain the best tree model and
+selected model is not tree-based, we still explain the selected tree model and
 say so, because that is what SHAP can attribute reliably.
 
 Run: python -m src.interpret_shap
@@ -23,17 +23,25 @@ import shap
 
 import config
 from src import viz
-from src.preprocess import build_design
+from src.harmonize import harmonize
+from src.preprocess import NOMINAL, _numeric_block, build_design, clean
 
 TREE_MODELS = {"DT", "RF", "XGB", "CatBoost"}
 TOP_N = 12
 
 
 def _best_tree() -> dict:
+    lock_path = config.RESULTS / "pipeline_lock.json"
+    if lock_path.exists():
+        lock = json.loads(lock_path.read_text())
+        if lock["model"] in TREE_MODELS:
+            return {"model": lock["model"], "feature_set": lock["feature_set"],
+                    "locked": True}
     cv = pd.read_csv(config.RESULTS / "cv_results.csv")
     cv = cv[cv["model"].isin(TREE_MODELS)].sort_values("cv_pr_auc", ascending=False)
     top = cv.iloc[0]
-    return {"model": top["model"], "feature_set": top["feature_set"]}
+    return {"model": top["model"], "feature_set": top["feature_set"],
+            "locked": False}
 
 
 def _feature_idx_and_names(d):
@@ -71,24 +79,39 @@ def _shap_values(pipe, X):
 
 
 def run():
-    d = build_design()
-    best, idx, pretty = _feature_idx_and_names(d)
-    pipe = joblib.load(config.MODELS / f"{best['model']}__{best['feature_set']}.joblib")
+    best = _best_tree()
+    if best["locked"]:
+        pipe = joblib.load(config.MODELS / "locked_pipeline.joblib")
+        df = clean(harmonize())
+        feature_cols = _numeric_block(df) + list(NOMINAL)
+        transformed_names = list(
+            pipe.named_steps["preprocess"].get_feature_names_out())
+        pretty = [n.replace("num__", "").replace("cat__", "")
+                  for n in transformed_names]
+        train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)]
+        test = df[df[config.YEAR_COL] == config.TEST_YEAR]
+        Xte = test[feature_cols]
+    else:
+        d = build_design()
+        best, idx, pretty = _feature_idx_and_names(d)
+        pipe = joblib.load(config.MODELS / f"{best['model']}__{best['feature_set']}.joblib")
+        Xte = d["X_test"][:, idx]
     print(f"  SHAP on best tree model: {best['model']} [{best['feature_set']}]")
 
     # ---- Fig 5: beeswarm + bar on 2022 ----------------------------------- #
-    Xte = d["X_test"][:, idx]
     sv, Xt = _shap_values(pipe, Xte)
     shap.summary_plot(sv, Xt, feature_names=pretty, show=False, max_display=TOP_N)
     fig = viz.plt.gcf()
-    fig.suptitle(f"SHAP -- {best['model']} on held-out 2022", y=1.02)
+    fig.suptitle(f"SHAP -- {best['model']} in the 2022 temporal evaluation", y=1.02)
     viz.save(fig, "fig5_shap_beeswarm.png")
 
     # ---- Fig 6: temporal stability of mean|SHAP| ------------------------- #
-    Xtr, ytr_year = d["X_train"][:, idx], d["year_train"]
     per_round = {}
     for yr in config.TRAIN_YEARS:
-        rows = Xtr[ytr_year == yr]
+        if best["locked"]:
+            rows = train.loc[train[config.YEAR_COL] == yr, feature_cols]
+        else:
+            rows = d["X_train"][d["year_train"] == yr][:, idx]
         sv_y, _ = _shap_values(pipe, rows)
         per_round[yr] = np.abs(sv_y).mean(axis=0)
     per_round[config.TEST_YEAR] = np.abs(sv).mean(axis=0)
@@ -106,7 +129,7 @@ def run():
     ax.set_yticks(range(len(imp))[::-1])
     ax.set_yticklabels(imp.index, fontsize=8)
     ax.set_xlabel("share of mean|SHAP| within round")
-    ax.set_title(f"Temporal stability of the risk signature ({best['model']})")
+    ax.set_title(f"Round-specific SHAP attribution profiles ({best['model']})")
     ax.legend(title="BDHS round", fontsize=8)
     viz.save(fig, "fig6_shap_temporal.png")
 

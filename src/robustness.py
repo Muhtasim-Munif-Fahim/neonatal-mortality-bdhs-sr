@@ -1,13 +1,13 @@
 """
 ML robustness add-ons (run after modeling/evaluate):
 
-  A. Balancing sensitivity -- retrain the best model under SMOTE vs ADASYN vs
+  A. Balancing sensitivity -- retrain the selected comparison model under SMOTE vs ADASYN vs
      class-weight vs no resampling; compare discrimination AND calibration (raw +
      isotonic-recalibrated). Confirms the resampler choice on the honest criterion
      (calibration), not accuracy.                       -> table6, fig10
   B. Cluster-bootstrap 95% CIs on the 2022 test metrics (resample 2022 PSUs) for
      every model -- turns point estimates into interval estimates.  -> table7
-  C. Subgroup performance of the best model (residence / sex / wealth). -> table8
+  C. Subgroup performance of the selected pipeline (residence / sex / wealth). -> table8
 
 No new dependency (ADASYN ships with imbalanced-learn).
 
@@ -31,7 +31,7 @@ from sklearn.model_selection import GroupKFold
 import config
 from src import viz
 from src.harmonize import harmonize
-from src.preprocess import build_design
+from src.preprocess import NOMINAL, _numeric_block, build_design, clean
 
 N_BOOT = 1000
 
@@ -72,6 +72,11 @@ def _oof_isotonic(pipe, Xtr, ytr, groups, raw_test_p):
 # A. Balancing sensitivity
 # --------------------------------------------------------------------------- #
 def balancing_sensitivity() -> pd.DataFrame:
+    """Exploratory comparison-model analysis on the cached development design.
+
+    This is not the locked raw-data pipeline and must not be interpreted as a
+    second pipeline-selection exercise.
+    """
     best = json.loads((config.RESULTS / "best_model.json").read_text())
     d = build_design()
     idx = _feature_idx(list(d["feature_names"]), best["feature_set"])
@@ -81,12 +86,20 @@ def balancing_sensitivity() -> pd.DataFrame:
     base = joblib.load(config.MODELS / f"{best['model']}__{best['feature_set']}.joblib")
     clf = base.named_steps["clf"]           # tuned estimator
 
+    if "auto_class_weights" in clf.get_params():
+        weighted_clf = clone(clf).set_params(auto_class_weights="Balanced")
+    elif "class_weight" in clf.get_params():
+        weighted_clf = clone(clf).set_params(class_weight="balanced")
+    else:
+        ratio = float((ytr == 0).sum() / max((ytr == 1).sum(), 1))
+        weighted_clf = clone(clf).set_params(scale_pos_weight=ratio)
+
     strategies = {
         "SMOTE": ImbPipeline([("balance", SMOTE(random_state=config.SEED)),
                               ("clf", clone(clf))]),
         "ADASYN": ImbPipeline([("balance", ADASYN(random_state=config.SEED)),
                                ("clf", clone(clf))]),
-        "class_weight": clone(clf).set_params(class_weight="balanced"),
+        "class_weight": weighted_clf,
         "none": clone(clf),
     }
 
@@ -98,6 +111,7 @@ def balancing_sensitivity() -> pd.DataFrame:
         cal = _oof_isotonic(pipe, Xtr, ytr, groups, raw)
         curves[name] = raw
         rows.append({
+            "analysis_scope": "exploratory fixed-design comparison model",
             "balancing": name,
             "ROC_AUC": round(roc_auc_score(yte, raw), 3),
             "PR_AUC": round(average_precision_score(yte, raw), 3),
@@ -129,12 +143,20 @@ def _fig_balancing(y, curves):
 # --------------------------------------------------------------------------- #
 # B. Cluster-bootstrap CIs on test metrics
 # --------------------------------------------------------------------------- #
-def _boot_ci(y, p, clusters, rng):
-    uniq = np.unique(clusters)
-    idx_by = {c: np.where(clusters == c)[0] for c in uniq}
+def _boot_ci(y, p, clusters, rng, strata=None):
+    strata = np.zeros(len(y), dtype=int) if strata is None else np.asarray(strata)
+    stratum_groups = []
+    for stratum in np.unique(strata):
+        sub = np.where(strata == stratum)[0]
+        uniq = np.unique(clusters[sub])
+        idx_by = {c: sub[clusters[sub] == c] for c in uniq}
+        stratum_groups.append((uniq, idx_by))
     roc, pr, br = [], [], []
     for _ in range(N_BOOT):
-        rows = np.concatenate([idx_by[c] for c in rng.choice(uniq, len(uniq), replace=True)])
+        rows = np.concatenate([
+            np.concatenate([idx_by[c] for c in rng.choice(uniq, len(uniq), replace=True)])
+            for uniq, idx_by in stratum_groups
+        ])
         yy, pp = y[rows], p[rows]
         if yy.sum() == 0 or yy.sum() == len(yy):
             continue
@@ -158,7 +180,8 @@ def bootstrap_cis() -> pd.DataFrame:
     for col in [c for c in preds.columns if "|" in c]:
         model, fset = col.split("|")
         p = preds[col].to_numpy()
-        roc_ci, pr_ci, br_ci = _boot_ci(y, p, clusters, rng)
+        roc_ci, pr_ci, br_ci = _boot_ci(
+            y, p, clusters, rng, meta[config.STRATUM_COL].to_numpy())
         rows.append({
             "model": model, "feature_set": fset,
             "ROC_AUC": round(roc_auc_score(y, p), 3), "ROC_AUC_95CI": roc_ci,
@@ -171,32 +194,184 @@ def bootstrap_cis() -> pd.DataFrame:
     return tab
 
 
+def primary_uncertainty() -> pd.DataFrame:
+    """Stratified-PSU bootstrap CIs for raw and recalibrated headline metrics."""
+    from src.evaluate import _calibration
+    pred = pd.read_parquet(config.RESULTS / "primary_predictions.parquet")
+    meta = _test_meta(pd.DataFrame({"y_test": pred["y_test"]}))
+    y = pred["y_test"].to_numpy()
+    clusters = meta[config.CLUSTER_COL].to_numpy()
+    strata = meta[config.STRATUM_COL].to_numpy()
+    rng = np.random.default_rng(config.SEED)
+
+    groups = []
+    for stratum in np.unique(strata):
+        sub = np.where(strata == stratum)[0]
+        uniq = np.unique(clusters[sub])
+        groups.append((uniq, {c: sub[clusters[sub] == c] for c in uniq}))
+
+    rows = []
+    for label in ["raw", "recalibrated"]:
+        p = pred[label].to_numpy()
+        boot = {k: [] for k in ["ROC_AUC", "PR_AUC", "Brier",
+                                "cal_slope", "cal_intercept"]}
+        for _ in range(N_BOOT):
+            take = np.concatenate([
+                np.concatenate([idx[c] for c in rng.choice(uniq, len(uniq), replace=True)])
+                for uniq, idx in groups
+            ])
+            yy, pp = y[take], p[take]
+            if yy.sum() == 0 or yy.sum() == len(yy):
+                continue
+            try:
+                slope, intercept = _calibration(yy, pp)
+            except Exception:
+                continue
+            boot["ROC_AUC"].append(roc_auc_score(yy, pp))
+            boot["PR_AUC"].append(average_precision_score(yy, pp))
+            boot["Brier"].append(brier_score_loss(yy, pp))
+            boot["cal_slope"].append(slope)
+            boot["cal_intercept"].append(intercept)
+        slope, intercept = _calibration(y, p)
+        point = {
+            "ROC_AUC": roc_auc_score(y, p),
+            "PR_AUC": average_precision_score(y, p),
+            "Brier": brier_score_loss(y, p),
+            "cal_slope": slope,
+            "cal_intercept": intercept,
+        }
+        row = {"prediction": label, **point,
+               "observed_prevalence": y.mean(), "mean_predicted_risk": p.mean(),
+               "observed_to_expected": y.sum() / p.sum(),
+               "bootstrap_successes": len(boot["Brier"]),
+               "bootstrap_failures": N_BOOT - len(boot["Brier"])}
+        for metric, values in boot.items():
+            lo, hi = np.percentile(values, [2.5, 97.5])
+            row[f"{metric}_95CI"] = f"{lo:.3f}-{hi:.3f}"
+        rows.append(row)
+    tab = pd.DataFrame(rows)
+    tab.to_csv(config.RESULTS / "primary_performance_uncertainty.csv", index=False)
+    print("  B2. primary raw/recalibrated uncertainty -> primary_performance_uncertainty")
+    return tab
+
+
 # --------------------------------------------------------------------------- #
-# C. Subgroup performance (best model)
+# C. Subgroup performance (selected pipeline)
 # --------------------------------------------------------------------------- #
 def subgroup_performance() -> pd.DataFrame:
     best = json.loads((config.RESULTS / "best_model.json").read_text())
-    preds = pd.read_parquet(config.RESULTS / "test_predictions.parquet")
+    preds = pd.read_parquet(config.RESULTS / "primary_predictions.parquet")
     meta = _test_meta(preds)
     y = preds["y_test"].to_numpy()
-    p = preds[f"{best['model']}|{best['feature_set']}"].to_numpy()
+    p = preds["raw"].to_numpy()
 
     meta = meta.assign(
         wealth_group=np.where(meta["wealth"].isin(["poorest", "poorer"]), "poor",
                               np.where(meta["wealth"] == "middle", "middle", "rich")),
     )
+    from src.evaluate import _calibration
     rows = []
     for var in ["residence", "sex", "wealth_group"]:
         for level, m in meta.groupby(var).groups.items():
             m = np.asarray(m)
             yy, pp = y[m], p[m]
-            auc = roc_auc_score(yy, pp) if 0 < yy.sum() < len(yy) else np.nan
-            rows.append({"subgroup": f"{var}={level}", "n": len(m),
-                         "deaths": int(yy.sum()),
-                         "ROC_AUC": round(auc, 3) if np.isfinite(auc) else "NA"})
+            valid = 0 < yy.sum() < len(yy)
+            auc = roc_auc_score(yy, pp) if valid else np.nan
+            pr = average_precision_score(yy, pp) if valid else np.nan
+            brier = brier_score_loss(yy, pp) if valid else np.nan
+            roc_ci, pr_ci, br_ci = _boot_ci(
+                yy, pp, meta.iloc[m][config.CLUSTER_COL].to_numpy(),
+                np.random.default_rng(config.SEED + len(rows)),
+                meta.iloc[m][config.STRATUM_COL].to_numpy(),
+            ) if valid else ("NA", "NA", "NA")
+            slope, intercept = (np.nan, np.nan)
+            if valid and yy.sum() >= 20:
+                try:
+                    slope, intercept = _calibration(yy, pp)
+                except Exception:
+                    pass
+            rows.append({
+                "subgroup": f"{var}={level}", "n": len(m),
+                "deaths": int(yy.sum()),
+                "ROC_AUC": round(auc, 3) if np.isfinite(auc) else "NA",
+                "ROC_AUC_95CI": roc_ci,
+                "PR_AUC": round(pr, 3) if np.isfinite(pr) else "NA",
+                "PR_AUC_95CI": pr_ci,
+                "Brier": round(brier, 4) if np.isfinite(brier) else "NA",
+                "Brier_95CI": br_ci,
+                "cal_slope": round(slope, 3) if np.isfinite(slope) else "NA",
+                "cal_intercept": round(intercept, 3) if np.isfinite(intercept) else "NA",
+                "analysis_label": "exploratory; raw selected-pipeline predictions",
+            })
     tab = pd.DataFrame(rows)
     tab.to_csv(config.RESULTS / "table8_subgroups.csv", index=False)
     print(f"  C. subgroup performance ({best['model']}) -> table8")
+    return tab
+
+
+# --------------------------------------------------------------------------- #
+# E. Survey-weighted, native-class training sensitivity
+# --------------------------------------------------------------------------- #
+def survey_weighted_native_sensitivity() -> pd.DataFrame:
+    """Compare native-class fits with and without survey training weights."""
+    from src.evaluate import _calibration
+    from sklearn.linear_model import LogisticRegression
+
+    def weighted_calibration(y, p, w):
+        clipped = np.clip(p, 1e-6, 1 - 1e-6)
+        logit = np.log(clipped / (1 - clipped)).reshape(-1, 1)
+        lr = LogisticRegression(penalty=None, solver="lbfgs", max_iter=1000)
+        lr.fit(logit, y, sample_weight=w)
+        return float(lr.coef_[0][0]), float(lr.intercept_[0])
+    best = json.loads((config.RESULTS / "best_model.json").read_text())
+    df = clean(harmonize())
+    feature_cols = _numeric_block(df) + list(NOMINAL)
+    train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)]
+    test = df[df[config.YEAR_COL] == config.TEST_YEAR]
+    Xtr, ytr = train[feature_cols], train[config.TARGET].to_numpy()
+    Xte, yte = test[feature_cols], test[config.TARGET].to_numpy()
+    w_train = train[config.WEIGHT_COL].to_numpy()
+    w_test = test[config.WEIGHT_COL].to_numpy()
+    base = joblib.load(config.MODELS / "locked_pipeline.joblib")
+    native_steps = [(name, clone(step)) for name, step in base.steps
+                    if not hasattr(step, "fit_resample")]
+
+    rows = []
+    for label, weights in [("native_unweighted", None),
+                           ("native_survey_weighted", w_train)]:
+        pipe = ImbPipeline([(name, clone(step)) for name, step in native_steps])
+        if weights is None:
+            pipe.fit(Xtr, ytr)
+        else:
+            try:
+                pipe.fit(Xtr, ytr, clf__sample_weight=weights)
+            except TypeError:
+                # KNN and other estimators without sample_weight use a
+                # deterministic probability-proportional weighted resample.
+                rng = np.random.default_rng(config.SEED)
+                take = rng.choice(len(ytr), len(ytr), replace=True,
+                                  p=weights / weights.sum())
+                pipe.fit(Xtr.iloc[take], ytr[take])
+        p = pipe.predict_proba(Xte)[:, 1]
+        slope, intercept = _calibration(yte, p)
+        slope_w, intercept_w = weighted_calibration(yte, p, w_test)
+        rows.append({
+            "training": label,
+            "ROC_AUC": roc_auc_score(yte, p),
+            "PR_AUC": average_precision_score(yte, p),
+            "Brier": brier_score_loss(yte, p),
+            "cal_slope": slope,
+            "cal_intercept": intercept,
+            "ROC_AUC_weighted": roc_auc_score(yte, p, sample_weight=w_test),
+            "PR_AUC_weighted": average_precision_score(
+                yte, p, sample_weight=w_test),
+            "Brier_weighted": brier_score_loss(yte, p, sample_weight=w_test),
+            "cal_slope_weighted": slope_w,
+            "cal_intercept_weighted": intercept_w,
+        })
+    tab = pd.DataFrame(rows)
+    tab.to_csv(config.RESULTS / "table10_survey_weighted_native.csv", index=False)
+    print("  E. survey-weighted native-class sensitivity -> table10")
     return tab
 
 
@@ -208,7 +383,7 @@ def _is_indicator(name: str) -> bool:
 
 
 def indicator_sensitivity() -> pd.DataFrame:
-    """Refit the primary model WITHOUT missing-data indicators and compare.
+    """Refit a fixed-design comparison model without missing indicators.
 
     Answers the concern that a missing-data flag dominates the interpretation:
     does the model still perform once those features are removed?
@@ -224,12 +399,13 @@ def indicator_sensitivity() -> pd.DataFrame:
     Xtr, ytr, Xte, yte = d["X_train"], d["y_train"], d["X_test"], d["y_test"]
 
     rows, fitted = [], {}
-    for label, idx in [("with indicators (primary)", idx_all),
+    for label, idx in [("with indicators (comparison)", idx_all),
                        ("without indicators", idx_red)]:
         pipe = clone(base).fit(Xtr[:, idx], ytr)
         p = pipe.predict_proba(Xte[:, idx])[:, 1]
         slope, intercept = _calibration(yte, p)
         rows.append({
+            "analysis_scope": "exploratory fixed-design comparison model",
             "model": f"{best['model']} [{label}]", "n_features": len(idx),
             "ROC_AUC": round(roc_auc_score(yte, p), 3),
             "PR_AUC": round(average_precision_score(yte, p), 3),
@@ -265,8 +441,10 @@ def indicator_sensitivity() -> pd.DataFrame:
 def run():
     balancing_sensitivity()
     bootstrap_cis()
+    primary_uncertainty()
     subgroup_performance()
     indicator_sensitivity()
+    survey_weighted_native_sensitivity()
 
 
 if __name__ == "__main__":
