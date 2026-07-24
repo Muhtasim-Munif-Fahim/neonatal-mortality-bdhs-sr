@@ -31,10 +31,11 @@ from sklearn.model_selection import GroupKFold
 import config
 from src import viz
 from src.harmonize import harmonize
-from src.preprocess import (CARE_BINARY, CARE_NOMINAL, CARE_NUMERIC, CARE_ORDINAL,
-                            CONTEXT_BINARY, CONTEXT_NOMINAL, CONTEXT_NUMERIC,
-                            CONTEXT_ORDINAL, NOMINAL, _numeric_block, build_design,
-                            clean)
+from src.preprocess import (BINARY, CARE_BINARY, CARE_NOMINAL, CARE_NUMERIC,
+                            CARE_ORDINAL, CONTEXT_BINARY, CONTEXT_NOMINAL,
+                            CONTEXT_NUMERIC, CONTEXT_ORDINAL, NOMINAL, NUMERIC,
+                            _numeric_block, build_design, clean,
+                            primary_feature_cols, primary_frame)
 
 N_BOOT = 1000
 
@@ -327,8 +328,9 @@ def survey_weighted_native_sensitivity() -> pd.DataFrame:
         lr.fit(logit, y, sample_weight=w)
         return float(lr.coef_[0][0]), float(lr.intercept_[0])
     best = json.loads((config.RESULTS / "best_model.json").read_text())
-    df = clean(harmonize())
-    feature_cols = _numeric_block(df) + list(NOMINAL)
+    df = primary_frame()
+    numeric_cols, nominal_cols = primary_feature_cols()
+    feature_cols = numeric_cols + nominal_cols
     train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)]
     test = df[df[config.YEAR_COL] == config.TEST_YEAR]
     Xtr, ytr = train[feature_cols], train[config.TARGET].to_numpy()
@@ -397,9 +399,12 @@ def predictor_scope_sensitivity() -> pd.DataFrame:
     est, _, scale, balancer = _models()[lock["model"]]
     fixed_params = lock.get("final_best_params", {})
     scopes = [
+        ("birth_anchored_only", False,
+         NUMERIC + BINARY, NOMINAL,
+         "variables anchored at or before birth; prospective-valid but limited discrimination"),
         ("survey_context_enriched", False,
          CONTEXT_NUMERIC + CONTEXT_BINARY + CONTEXT_ORDINAL, CONTEXT_NOMINAL,
-         "survey-time context; retrospective association may not reflect birth-time state"),
+         "primary model; survey-time socioeconomic context is a cross-sectional risk factor, not birth-time state"),
         ("care_enriched_most_recent", True,
          CARE_NUMERIC + CARE_BINARY + CARE_ORDINAL, CARE_NOMINAL,
          "most-recent birth; 2022 long questionnaire; selection can depend on later fertility"),

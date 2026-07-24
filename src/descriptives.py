@@ -31,7 +31,9 @@ def _wmean_sd(x, w):
 
 
 def build_outcome_stratified() -> pd.DataFrame:
-    df = harmonize()
+    # Care-module cohort so antenatal/delivery associations are on a populated
+    # denominator; documents the care sensitivity cohort by outcome (supplement).
+    df = harmonize(module_only=True)
     y = df[config.TARGET]
     w = df[config.WEIGHT_COL].to_numpy(float)
     rows = []
@@ -153,25 +155,32 @@ def build() -> pd.DataFrame:
          dev_label: f"{1000 * np.average(dev[config.TARGET], weights=dev[config.WEIGHT_COL]):.1f}",
          eva_label: f"{1000 * np.average(eva[config.TARGET], weights=eva[config.WEIGHT_COL]):.1f}",
          "weighted_SMD": np.nan},
-        continuous("Primary birth-history predictors", "Maternal age at birth, years", "mother_age"),
-        continuous("Primary birth-history predictors", "Birth order", "birth_order"),
-        continuous("Primary birth-history predictors", "Preceding birth interval, months",
+        continuous("Infant and maternal characteristics", "Maternal age at birth, years", "mother_age"),
+        continuous("Infant and maternal characteristics", "Birth order", "birth_order"),
+        continuous("Infant and maternal characteristics", "Preceding birth interval, months",
                    "birth_interval", mask_left=dev["firstborn"].eq(0),
                    mask_right=eva["firstborn"].eq(0)),
-        binary("Primary birth-history predictors", "First birth", dev["firstborn"], eva["firstborn"]),
-        binary("Primary birth-history predictors", "Male infant", dev["sex"].eq("male").astype(int),
+        continuous("Infant and maternal characteristics", "Children ever born", "children_ever_born"),
+        binary("Infant and maternal characteristics", "First birth", dev["firstborn"], eva["firstborn"]),
+        binary("Infant and maternal characteristics", "Male infant", dev["sex"].eq("male").astype(int),
                eva["sex"].eq("male").astype(int)),
-        binary("Primary birth-history predictors", "Multiple birth", dev["multiple_birth"],
+        binary("Infant and maternal characteristics", "Multiple birth", dev["multiple_birth"],
                eva["multiple_birth"]),
-        binary("Survey-time context (sensitivity only)", "Mother completed secondary or higher education",
+        binary("Household socioeconomic characteristics", "Mother completed secondary or higher education",
                dev["mother_edu"].isin(["secondary", "higher"]).astype(int),
                eva["mother_edu"].isin(["secondary", "higher"]).astype(int)),
-        binary("Survey-time context (sensitivity only)", "Poorest wealth quintile",
+        binary("Household socioeconomic characteristics", "Mother currently working",
+               dev["mother_working"], eva["mother_working"]),
+        binary("Household socioeconomic characteristics", "Poorest wealth quintile",
                dev["wealth"].eq("poorest").astype(int), eva["wealth"].eq("poorest").astype(int)),
-        binary("Survey-time context (sensitivity only)", "Rural residence",
+        binary("Household socioeconomic characteristics", "Rural residence",
                dev["residence"].eq("rural").astype(int), eva["residence"].eq("rural").astype(int)),
-        binary("Survey-time context (sensitivity only)", "Improved sanitation",
+        binary("Household socioeconomic characteristics", "Improved drinking water",
+               dev["water_improved"], eva["water_improved"]),
+        binary("Household socioeconomic characteristics", "Improved sanitation",
                dev["sanitation_improved"], eva["sanitation_improved"]),
+        binary("Household socioeconomic characteristics", "Any media exposure",
+               dev["media_exposure"], eva["media_exposure"]),
     ]
     tab = pd.DataFrame(rows)
     tab.to_csv(config.RESULTS / "table1_cohort_characteristics.csv", index=False)

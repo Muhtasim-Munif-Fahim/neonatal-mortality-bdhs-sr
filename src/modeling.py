@@ -49,8 +49,9 @@ from sklearn.base import clone
 from sklearn.isotonic import IsotonicRegression
 from src.features_boruta import run as boruta_run
 from src.harmonize import harmonize
-from src.preprocess import (NOMINAL, _numeric_block, build_design, clean,
-                            make_preprocessor)
+from src.preprocess import (NOMINAL, PRIMARY_ADD_INDICATORS, _numeric_block,
+                            build_design, clean, make_preprocessor,
+                            primary_feature_cols, primary_frame)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -134,8 +135,9 @@ def forward_validate(force: bool = False) -> tuple[pd.DataFrame, dict]:
     if out.exists() and lock_path.exists() and not force:
         return pd.read_csv(out), json.loads(lock_path.read_text())
 
-    df = clean(harmonize())
-    feature_cols = _numeric_block(df) + list(NOMINAL)
+    df = primary_frame()
+    numeric_cols, nominal_cols = primary_feature_cols()
+    feature_cols = numeric_cols + nominal_cols
     windows = [([2011], 2014), ([2011, 2014], 2017)]
     rows = []
     for development_years, validation_year in windows:
@@ -145,7 +147,9 @@ def forward_validate(force: bool = False) -> tuple[pd.DataFrame, dict]:
         inner = GroupKFold(n_splits=n_splits)
         for mname, (est, grid, scale, balancer) in _models().items():
             search = GridSearchCV(
-                _raw_pipeline(est, scale, balancer), grid, scoring=SCORING,
+                _raw_pipeline(est, scale, balancer, numeric_cols, nominal_cols,
+                              add_missing_indicators=PRIMARY_ADD_INDICATORS),
+                grid, scoring=SCORING,
                 cv=inner, n_jobs=-1, refit=True, error_score="raise",
             )
             search.fit(tr[feature_cols], tr[config.TARGET],
@@ -215,8 +219,9 @@ def fit_locked_pipeline(lock: dict) -> np.ndarray:
     column so all headline evaluation uses the fully nested pipeline. Grouped
     OOF development predictions are saved for thresholding and recalibration.
     """
-    df = clean(harmonize())
-    feature_cols = _numeric_block(df) + list(NOMINAL)
+    df = primary_frame()
+    numeric_cols, nominal_cols = primary_feature_cols()
+    feature_cols = numeric_cols + nominal_cols
     train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)].copy()
     test = df[df[config.YEAR_COL] == config.TEST_YEAR].copy()
     est, grid, scale, balancer = _models()[lock["model"]]
@@ -231,7 +236,9 @@ def fit_locked_pipeline(lock: dict) -> np.ndarray:
             grouped_cv.split(train[feature_cols], y_train, groups), start=1):
         inner = GroupKFold(n_splits=CV_FOLDS)
         nested = GridSearchCV(
-            _raw_pipeline(est, scale, balancer), grid, scoring=SCORING,
+            _raw_pipeline(est, scale, balancer, numeric_cols, nominal_cols,
+                          add_missing_indicators=PRIMARY_ADD_INDICATORS),
+            grid, scoring=SCORING,
             cv=inner, n_jobs=-1, refit=True, error_score="raise",
         )
         nested.fit(train.iloc[outer_tr][feature_cols], y_train[outer_tr],
@@ -243,7 +250,9 @@ def fit_locked_pipeline(lock: dict) -> np.ndarray:
     # Once OOF predictions are sealed, tune on all development data and refit
     # the final pipeline for the single temporally separated 2022 evaluation.
     search = GridSearchCV(
-        _raw_pipeline(est, scale, balancer), grid, scoring=SCORING,
+        _raw_pipeline(est, scale, balancer, numeric_cols, nominal_cols,
+                      add_missing_indicators=PRIMARY_ADD_INDICATORS),
+        grid, scoring=SCORING,
         cv=grouped_cv, n_jobs=-1, refit=True, error_score="raise",
     )
     search.fit(train[feature_cols], y_train, groups=groups)

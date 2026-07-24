@@ -40,7 +40,17 @@ ORDINAL = {
 }
 NOMINAL = ["sex"]
 
-# Sensitivity scopes. These are never used to select or fit the primary model.
+# Predictor scopes.
+#   birth   : characteristics anchored at or before birth (strict prospective set)
+#   context : birth + household socioeconomic characteristics (PRIMARY model)
+#   care    : context + antenatal/delivery-service characteristics
+# The "context" scope is the PRIMARY risk-factor model. It is fitted on the
+# representative all-recent cohort, which retains the full 2022 event count and
+# contains no antenatal/delivery items, so the most-recent-birth (m14) routing
+# concern does not arise. Household socioeconomic characteristics are measured at
+# interview and are interpreted as cross-sectional risk factors, not as inputs to
+# a prospective at-birth screen. The narrow "birth" scope (prospective-only) and
+# the "care" scope (antenatal/delivery, care-module cohort) are sensitivities.
 CONTEXT_NUMERIC = NUMERIC + ["children_ever_born"]
 CONTEXT_BINARY = BINARY + ["water_improved", "sanitation_improved", "media_exposure"]
 CONTEXT_ORDINAL = ["mother_edu", "wealth"]
@@ -50,6 +60,32 @@ CARE_BINARY = CONTEXT_BINARY + ["anc_4plus", "skilled_attendant", "csection",
                                 "mother_working"]
 CARE_ORDINAL = CONTEXT_ORDINAL
 CARE_NOMINAL = CONTEXT_NOMINAL + ["delivery_place"]
+
+# --------------------------------------------------------------------------- #
+# Primary-model scope (single source of truth shared with modeling.py)
+# --------------------------------------------------------------------------- #
+# The primary risk-factor model uses the context scope (infant, maternal, and
+# household socioeconomic characteristics) on the representative all-recent
+# cohort, with missing-value indicators so informative item nonresponse is
+# represented rather than silently median-filled.
+PRIMARY_MODULE_ONLY = False
+PRIMARY_ADD_INDICATORS = True
+
+
+def primary_feature_cols() -> tuple[list[str], list[str]]:
+    """(numeric_cols, nominal_cols) for the primary risk-factor model.
+
+    Ordinal features (education, wealth) are integer-coded in clean() and enter
+    the numeric block; the remaining categoricals are one-hot encoded.
+    """
+    numeric = CONTEXT_NUMERIC + CONTEXT_BINARY + CONTEXT_ORDINAL
+    nominal = list(CONTEXT_NOMINAL)
+    return numeric, nominal
+
+
+def primary_frame() -> pd.DataFrame:
+    """Cleaned primary analytic frame (care-module cohort)."""
+    return clean(harmonize(module_only=PRIMARY_MODULE_ONLY))
 
 # Domain clip bounds for outlier control (applied in clean()).
 _CLIP = {
@@ -91,9 +127,10 @@ def _numeric_block(df: pd.DataFrame) -> list[str]:
     return NUMERIC + BINARY
 
 
-def report_multicollinearity(train: pd.DataFrame) -> list[str]:
+def report_multicollinearity(train: pd.DataFrame,
+                             cols: list[str] | None = None) -> list[str]:
     """Report VIF on the numeric block (train only); no feature is removed."""
-    cols = _numeric_block(train)
+    cols = cols if cols is not None else _numeric_block(train)
     X = train[cols].apply(pd.to_numeric, errors="coerce")
     X = X.fillna(X.median(numeric_only=True))
     # VIF = diagonal of the inverse correlation matrix (pandas .corr is NaN-safe).
@@ -139,22 +176,23 @@ def build_design(force: bool = False) -> dict:
     if cache.exists() and meta_path.exists() and not force:
         return _load_design(cache, meta_path)
 
-    df = clean(harmonize())
+    df = primary_frame()
     train_mask = df[config.YEAR_COL].isin(config.TRAIN_YEARS)
     test_mask = df[config.YEAR_COL] == config.TEST_YEAR
     train, test = df[train_mask].copy(), df[test_mask].copy()
 
+    numeric_cols, nominal_cols = primary_feature_cols()
+
     # Report collinearity, but do not use it as a prediction-feature filter.
     # VIF concerns coefficient precision rather than predictive validity, and
     # a fixed candidate set is needed across chronological validation windows.
-    report_multicollinearity(train)
-    numeric_cols = _numeric_block(df)
-    nominal_cols = list(NOMINAL)
+    report_multicollinearity(train, numeric_cols)
 
-    # Birth interval is structurally undefined for first births, which are
-    # already represented by an explicit firstborn indicator. Adding an
-    # imputer-generated flag would duplicate that information exactly.
-    pre = make_preprocessor(numeric_cols, nominal_cols, add_missing_indicators=False)
+    # Missing-value indicators are added for the numeric/care block so that
+    # informative item nonresponse in the antenatal and delivery variables is
+    # represented explicitly rather than being silently median-imputed.
+    pre = make_preprocessor(numeric_cols, nominal_cols,
+                            add_missing_indicators=PRIMARY_ADD_INDICATORS)
     Xtr = pre.fit_transform(train[numeric_cols + nominal_cols])   # FIT ON TRAIN ONLY
     Xte = pre.transform(test[numeric_cols + nominal_cols])
     names = list(pre.get_feature_names_out())
@@ -180,7 +218,8 @@ def build_design(force: bool = False) -> dict:
     )
     meta_path.write_text(json.dumps({
         "feature_names": names,
-        "feature_scope": "birth-history variables anchored at or before birth",
+        "feature_scope": ("full risk-factor set: maternal, antenatal/delivery-care, "
+                          "and household characteristics on the care-module cohort"),
         "source_columns": numeric_cols + nominal_cols,
     }, indent=2))
     print(f"Design cached -> {cache}")

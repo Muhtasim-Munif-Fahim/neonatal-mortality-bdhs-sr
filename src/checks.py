@@ -21,7 +21,7 @@ from sklearn.linear_model import LogisticRegression
 
 import config
 from src.harmonize import cohort_counts, derive_neonatal_outcome, harmonize
-from src.preprocess import build_design, clean
+from src.preprocess import build_design, clean, primary_feature_cols
 from src.modeling import _pipeline, _smote
 
 
@@ -36,14 +36,14 @@ def run() -> bool:
     d = build_design()
 
     design_meta = json.loads((config.DATA_INTERIM / "design_meta.json").read_text())
-    allowed_primary = {"mother_age", "birth_order", "birth_interval",
-                       "multiple_birth", "firstborn", "sex"}
-    check("primary predictors are anchored at or before birth",
-          set(design_meta.get("source_columns", [])) == allowed_primary,
-          ",".join(design_meta.get("source_columns", [])))
-    check("primary design does not duplicate firstborn with an imputer indicator",
-          not any("missingindicator_birth_interval" in name
-                  for name in d["feature_names"]))
+    num_cols, nom_cols = primary_feature_cols()
+    check("primary design uses the infant/maternal/household risk-factor set",
+          set(design_meta.get("source_columns", [])) == set(num_cols + nom_cols),
+          f"{len(design_meta.get('source_columns', []))} source columns")
+    check("no antenatal/delivery-care variable enters the primary all-recent model",
+          not any(v in set(num_cols + nom_cols)
+                  for v in ["anc_visits", "anc_4plus", "csection",
+                            "delivery_place", "skilled_attendant"]))
 
     # 0. Endpoint boundary and complete follow-up definition
     boundary = derive_neonatal_outcome(pd.DataFrame({

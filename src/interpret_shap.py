@@ -20,7 +20,7 @@ import shap
 import config
 from src import viz
 from src.harmonize import harmonize
-from src.preprocess import NOMINAL, _numeric_block, clean
+from src.preprocess import clean, primary_feature_cols, primary_frame
 
 TREE_MODELS = {"DT", "RF", "XGB", "CatBoost"}
 TOP_N = 12
@@ -62,8 +62,9 @@ def run():
     lock = json.loads((config.RESULTS / "pipeline_lock.json").read_text())
     model_name = lock["model"]
     pipe = joblib.load(config.MODELS / "locked_pipeline.joblib")
-    df = clean(harmonize(module_only=False))
-    feature_cols = _numeric_block(df) + list(NOMINAL)
+    df = primary_frame()
+    numeric_cols, nominal_cols = primary_feature_cols()
+    feature_cols = numeric_cols + nominal_cols
     train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)]
     test = df[df[config.YEAR_COL] == config.TEST_YEAR]
     names = list(pipe.named_steps["preprocess"].get_feature_names_out())
