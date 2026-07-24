@@ -9,7 +9,8 @@ PR-AUC, ROC-AUC, Brier score and calibration.
 Outputs:
   * results/metrics_all.csv     (Table 2: every model x feature set)
   * figures/fig3_roc_pr.png     (ROC + PR curves)
-  * figures/fig4_calibration_dca.png  (calibration + decision-curve analysis)
+  * figures/fig4_calibration.png       (calibration curve)
+  * figures/figS_decision_curve.png    (decision-curve analysis, supplementary)
   * results/best_model.json     (development-only selected model for SHAP)
 
 Run: python -m src.evaluate
