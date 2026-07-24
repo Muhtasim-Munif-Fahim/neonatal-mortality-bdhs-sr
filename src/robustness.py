@@ -31,7 +31,10 @@ from sklearn.model_selection import GroupKFold
 import config
 from src import viz
 from src.harmonize import harmonize
-from src.preprocess import NOMINAL, _numeric_block, build_design, clean
+from src.preprocess import (CARE_BINARY, CARE_NOMINAL, CARE_NUMERIC, CARE_ORDINAL,
+                            CONTEXT_BINARY, CONTEXT_NOMINAL, CONTEXT_NUMERIC,
+                            CONTEXT_ORDINAL, NOMINAL, _numeric_block, build_design,
+                            clean)
 
 N_BOOT = 1000
 
@@ -376,6 +379,84 @@ def survey_weighted_native_sensitivity() -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
+# F. Predictor-timing and questionnaire-scope sensitivities
+# --------------------------------------------------------------------------- #
+def predictor_scope_sensitivity() -> pd.DataFrame:
+    """Evaluate enriched scopes without altering primary pipeline selection.
+
+    The primary model contains only birth-history variables anchored at or
+    before birth. This function holds the selected model family and tuned
+    hyperparameters fixed, then adds (1) survey-time contextual variables in
+    the all-recent cohort and (2) maternity-care variables in the most-recent
+    birth/long-questionnaire cohort. Grouped development OOF predictions are
+    used solely to fit isotonic recalibration for each sensitivity.
+    """
+    from src.modeling import _models, _raw_pipeline
+
+    lock = json.loads((config.RESULTS / "pipeline_lock.json").read_text())
+    est, _, scale, balancer = _models()[lock["model"]]
+    fixed_params = lock.get("final_best_params", {})
+    scopes = [
+        ("survey_context_enriched", False,
+         CONTEXT_NUMERIC + CONTEXT_BINARY + CONTEXT_ORDINAL, CONTEXT_NOMINAL,
+         "survey-time context; retrospective association may not reflect birth-time state"),
+        ("care_enriched_most_recent", True,
+         CARE_NUMERIC + CARE_BINARY + CARE_ORDINAL, CARE_NOMINAL,
+         "most-recent birth; 2022 long questionnaire; selection can depend on later fertility"),
+    ]
+    rows = []
+    for label, module_only, numeric_cols, nominal_cols, limitation in scopes:
+        df = clean(harmonize(module_only=module_only))
+        feature_cols = numeric_cols + nominal_cols
+        train = df[df[config.YEAR_COL].isin(config.TRAIN_YEARS)].copy()
+        test = df[df[config.YEAR_COL] == config.TEST_YEAR].copy()
+        ytr = train[config.TARGET].to_numpy(int)
+        yte = test[config.TARGET].to_numpy(int)
+        groups = train[config.CLUSTER_COL].to_numpy()
+        pipe = _raw_pipeline(est, scale, balancer, numeric_cols, nominal_cols,
+                             add_missing_indicators=True)
+        if fixed_params:
+            pipe.set_params(**fixed_params)
+
+        oof = np.zeros(len(train), dtype=float)
+        gkf = GroupKFold(n_splits=5)
+        for tr_idx, va_idx in gkf.split(train[feature_cols], ytr, groups):
+            fitted = clone(pipe).fit(train.iloc[tr_idx][feature_cols], ytr[tr_idx])
+            oof[va_idx] = fitted.predict_proba(train.iloc[va_idx][feature_cols])[:, 1]
+        fitted = clone(pipe).fit(train[feature_cols], ytr)
+        raw_p = fitted.predict_proba(test[feature_cols])[:, 1]
+        calibrated = IsotonicRegression(out_of_bounds="clip").fit(oof, ytr).transform(raw_p)
+        null_brier = brier_score_loss(yte, np.full(len(yte), yte.mean()))
+        for prediction, p in [("raw", raw_p), ("isotonic_recalibrated", calibrated)]:
+            from src.evaluate import _calibration
+            slope, intercept = _calibration(yte, p)
+            brier = brier_score_loss(yte, p)
+            rows.append({
+                "scope": label,
+                "prediction": prediction,
+                "n_development": len(train),
+                "events_development": int(ytr.sum()),
+                "n_evaluation": len(test),
+                "events_evaluation": int(yte.sum()),
+                "source_predictors": len(feature_cols),
+                "ROC_AUC": roc_auc_score(yte, p),
+                "PR_AUC": average_precision_score(yte, p),
+                "PR_AUC_baseline": float(yte.mean()),
+                "Brier": brier,
+                "Brier_null_evaluation": null_brier,
+                "Brier_skill": 1 - brier / null_brier,
+                "cal_slope": slope,
+                "cal_intercept": intercept,
+                "interpretive_limit": limitation,
+            })
+        print(f"  F. {label}: {len(train):,}/{int(ytr.sum())} development, "
+              f"{len(test):,}/{int(yte.sum())} evaluation")
+    tab = pd.DataFrame(rows)
+    tab.to_csv(config.RESULTS / "table11_predictor_scope_sensitivity.csv", index=False)
+    return tab
+
+
+# --------------------------------------------------------------------------- #
 # D. Missing-indicator sensitivity
 # --------------------------------------------------------------------------- #
 def _is_indicator(name: str) -> bool:
@@ -399,8 +480,11 @@ def indicator_sensitivity() -> pd.DataFrame:
     Xtr, ytr, Xte, yte = d["X_train"], d["y_train"], d["X_test"], d["y_test"]
 
     rows, fitted = [], {}
-    for label, idx in [("with indicators (comparison)", idx_all),
-                       ("without indicators", idx_red)]:
+    comparisons = ([ ("no automatic indicators; explicit firstborn flag", idx_all) ]
+                   if idx_all == idx_red else
+                   [("with indicators (comparison)", idx_all),
+                    ("without indicators", idx_red)])
+    for label, idx in comparisons:
         pipe = clone(base).fit(Xtr[:, idx], ytr)
         p = pipe.predict_proba(Xte[:, idx])[:, 1]
         slope, intercept = _calibration(yte, p)
@@ -414,8 +498,10 @@ def indicator_sensitivity() -> pd.DataFrame:
         })
         fitted[label] = (pipe, idx)
 
-    # top features of the reduced model (tree models only)
+    # Top features of a reduced tree comparison, when such a reduction exists.
     try:
+        if idx_all == idx_red:
+            raise ValueError("primary design has no automatic missing indicators")
         import shap
         from src.interpret_shap import _apply_transformers
         pipe, idx = fitted["without indicators"]
@@ -445,6 +531,7 @@ def run():
     subgroup_performance()
     indicator_sensitivity()
     survey_weighted_native_sensitivity()
+    predictor_scope_sensitivity()
 
 
 if __name__ == "__main__":

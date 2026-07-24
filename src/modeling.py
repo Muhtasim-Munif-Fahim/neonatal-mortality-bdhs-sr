@@ -45,6 +45,8 @@ from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
 import config
+from sklearn.base import clone
+from sklearn.isotonic import IsotonicRegression
 from src.features_boruta import run as boruta_run
 from src.harmonize import harmonize
 from src.preprocess import (NOMINAL, _numeric_block, build_design, clean,
@@ -105,10 +107,14 @@ def _pipeline(estimator, needs_scaling: bool, balancer_steps: list) -> ImbPipeli
 
 
 def _raw_pipeline(estimator, needs_scaling: bool,
-                  balancer_steps: list) -> ImbPipeline:
+                  balancer_steps: list, numeric_cols: list[str] | None = None,
+                  nominal_cols: list[str] | None = None,
+                  add_missing_indicators: bool = False) -> ImbPipeline:
     """Preprocessing-to-estimator pipeline used in chronological validation."""
-    numeric_cols = _numeric_block(pd.DataFrame())
-    steps = [("preprocess", make_preprocessor(numeric_cols, list(NOMINAL)))]
+    numeric_cols = numeric_cols or _numeric_block(pd.DataFrame())
+    nominal_cols = nominal_cols or list(NOMINAL)
+    steps = [("preprocess", make_preprocessor(
+        numeric_cols, nominal_cols, add_missing_indicators=add_missing_indicators))]
     if needs_scaling:
         steps.append(("scale", StandardScaler()))
     steps += balancer_steps
@@ -146,7 +152,19 @@ def forward_validate(force: bool = False) -> tuple[pd.DataFrame, dict]:
                        groups=tr[config.CLUSTER_COL])
             p = search.predict_proba(va[feature_cols])[:, 1]
             pr = average_precision_score(va[config.TARGET], p)
-            brier = brier_score_loss(va[config.TARGET], p)
+            brier_raw = brier_score_loss(va[config.TARGET], p)
+            # A Brier tie-breaker on SMOTE probabilities would mostly compare
+            # resampling-induced calibration distortion. Fit an isotonic map on
+            # PSU-grouped OOF predictions from the development years only, then
+            # apply that map to the forward validation round.
+            oof = cross_val_predict(
+                clone(search.best_estimator_), tr[feature_cols], tr[config.TARGET],
+                groups=tr[config.CLUSTER_COL], cv=inner, method="predict_proba",
+                n_jobs=-1,
+            )[:, 1]
+            iso = IsotonicRegression(out_of_bounds="clip").fit(
+                oof, tr[config.TARGET].to_numpy())
+            brier = brier_score_loss(va[config.TARGET], iso.transform(p))
             rows.append({
                 "model": mname,
                 "development_years": "+".join(map(str, development_years)),
@@ -155,10 +173,12 @@ def forward_validate(force: bool = False) -> tuple[pd.DataFrame, dict]:
                 "events_validation": int(va[config.TARGET].sum()),
                 "PR_AUC": pr,
                 "Brier": brier,
+                "Brier_raw": brier_raw,
+                "Brier_definition": "validation Brier after development-only grouped-OOF isotonic recalibration",
                 "best_params": json.dumps(search.best_params_, sort_keys=True),
             })
             print(f"  forward {development_years}->{validation_year} {mname}: "
-                  f"PR-AUC={pr:.3f}, Brier={brier:.4f}")
+                  f"PR-AUC={pr:.3f}, recalibrated Brier={brier:.4f}")
 
     detail = pd.DataFrame(rows)
     summary = (detail.groupby("model", as_index=False)
@@ -177,7 +197,7 @@ def forward_validate(force: bool = False) -> tuple[pd.DataFrame, dict]:
         "feature_set": "full",
         "selection_rule": (
             "highest mean forward-validation PR-AUC; within 0.005, lower "
-            "mean Brier score; then model simplicity"
+            "mean development-OOF-recalibrated Brier score; then model simplicity"
         ),
         "mean_pr_auc": float(chosen["mean_PR_AUC"]),
         "mean_brier": float(chosen["mean_Brier"]),

@@ -32,16 +32,24 @@ from src.harmonize import harmonize
 # --------------------------------------------------------------------------- #
 # Feature typing
 # --------------------------------------------------------------------------- #
-NUMERIC = ["mother_age", "birth_order", "birth_interval",
-           "children_ever_born", "anc_visits"]
-BINARY = ["multiple_birth", "firstborn", "anc_4plus", "skilled_attendant",
-          "csection", "mother_working", "water_improved", "sanitation_improved",
-          "media_exposure"]
+NUMERIC = ["mother_age", "birth_order", "birth_interval"]
+BINARY = ["multiple_birth", "firstborn"]
 ORDINAL = {
     "mother_edu": ["none", "primary", "secondary", "higher"],
     "wealth": ["poorest", "poorer", "middle", "richer", "richest"],
 }
-NOMINAL = ["sex", "religion", "residence", "division", "delivery_place"]
+NOMINAL = ["sex"]
+
+# Sensitivity scopes. These are never used to select or fit the primary model.
+CONTEXT_NUMERIC = NUMERIC + ["children_ever_born"]
+CONTEXT_BINARY = BINARY + ["water_improved", "sanitation_improved", "media_exposure"]
+CONTEXT_ORDINAL = ["mother_edu", "wealth"]
+CONTEXT_NOMINAL = NOMINAL + ["religion", "residence", "division"]
+CARE_NUMERIC = CONTEXT_NUMERIC + ["anc_visits"]
+CARE_BINARY = CONTEXT_BINARY + ["anc_4plus", "skilled_attendant", "csection",
+                                "mother_working"]
+CARE_ORDINAL = CONTEXT_ORDINAL
+CARE_NOMINAL = CONTEXT_NOMINAL + ["delivery_place"]
 
 # Domain clip bounds for outlier control (applied in clean()).
 _CLIP = {
@@ -73,14 +81,14 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].map(mapping)
 
     # binaries -> float (NaN preserved)
-    for col in BINARY:
+    for col in set(BINARY + CARE_BINARY):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     return df
 
 
 def _numeric_block(df: pd.DataFrame) -> list[str]:
-    return NUMERIC + BINARY + list(ORDINAL)
+    return NUMERIC + BINARY
 
 
 def report_multicollinearity(train: pd.DataFrame) -> list[str]:
@@ -109,8 +117,9 @@ def report_multicollinearity(train: pd.DataFrame) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Preprocessor
 # --------------------------------------------------------------------------- #
-def make_preprocessor(numeric_cols: list[str], nominal_cols: list[str]) -> ColumnTransformer:
-    numeric = SimpleImputer(strategy="median", add_indicator=True)
+def make_preprocessor(numeric_cols: list[str], nominal_cols: list[str],
+                      add_missing_indicators: bool = False) -> ColumnTransformer:
+    numeric = SimpleImputer(strategy="median", add_indicator=add_missing_indicators)
     nominal = Pipeline([
         ("impute", SimpleImputer(strategy="constant", fill_value="missing")),
         ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False, min_frequency=25)),
@@ -142,7 +151,10 @@ def build_design(force: bool = False) -> dict:
     numeric_cols = _numeric_block(df)
     nominal_cols = list(NOMINAL)
 
-    pre = make_preprocessor(numeric_cols, nominal_cols)
+    # Birth interval is structurally undefined for first births, which are
+    # already represented by an explicit firstborn indicator. Adding an
+    # imputer-generated flag would duplicate that information exactly.
+    pre = make_preprocessor(numeric_cols, nominal_cols, add_missing_indicators=False)
     Xtr = pre.fit_transform(train[numeric_cols + nominal_cols])   # FIT ON TRAIN ONLY
     Xte = pre.transform(test[numeric_cols + nominal_cols])
     names = list(pre.get_feature_names_out())
@@ -166,7 +178,11 @@ def build_design(force: bool = False) -> dict:
         year_train=design["year_train"],
         groups_train=design["groups_train"].astype(str),
     )
-    meta_path.write_text(json.dumps({"feature_names": names}, indent=2))
+    meta_path.write_text(json.dumps({
+        "feature_names": names,
+        "feature_scope": "birth-history variables anchored at or before birth",
+        "source_columns": numeric_cols + nominal_cols,
+    }, indent=2))
     print(f"Design cached -> {cache}")
     print(f"  X_train {design['X_train'].shape}  X_test {design['X_test'].shape}  "
           f"({len(names)} features)")

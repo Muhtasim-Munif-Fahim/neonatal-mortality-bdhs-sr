@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 import config
-from src.harmonize import (cohort_counts, complete_followup_mask,
+from src.harmonize import (care_module_mask, cohort_counts, complete_followup_mask,
                            derive_neonatal_outcome, derive_skilled_attendant,
                            recode_anc_4plus)
 
@@ -21,6 +21,22 @@ class HarmonizeBoundaryTests(unittest.TestCase):
         got = derive_neonatal_outcome(raw)
         self.assertTrue(got.iloc[:6].isna().all())
         self.assertEqual(got.iloc[6], 0)
+
+    def test_exact_non_neonatal_day_codes_remain_classifiable(self):
+        # DHS b6 uses 1xx for reported days; days 28-90 are non-neonatal,
+        # whereas last-two-digit values above 90 are special responses.
+        raw = pd.DataFrame({"b5": [0, 0, 0, 0], "b6": [128, 129, 135, 190]})
+        self.assertEqual(derive_neonatal_outcome(raw).tolist(), [0, 0, 0, 0])
+
+    def test_care_module_uses_design_not_item_response(self):
+        raw = pd.DataFrame({
+            "survey_year": [2014, 2014, 2022, 2022, 2022],
+            "bidx": [1, 2, 1, 1, 2],
+            "sqtype": [None, None, 1, 2, 1],
+            "m15": [None, 21, None, 21, 21],
+        })
+        self.assertEqual(care_module_mask(raw).tolist(),
+                         [True, False, True, False, False])
 
     def test_birth_month_survivors_wait_until_followup_is_complete(self):
         ages = pd.Series([0, 1, 27, 35, 36, None])

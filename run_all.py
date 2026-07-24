@@ -23,8 +23,8 @@ def main(force: bool = False) -> None:
     steps = [
         ("00 load",        lambda: load.load_all(force=force)),
         ("01 harmonize",   lambda: (
-            harmonize.harmonize(force=force),
             harmonize.harmonize(force=force, module_only=False),
+            harmonize.harmonize(force=force, module_only=True),
         )),
         ("02 preprocess",  lambda: preprocess.build_design(force=force)),
         ("03 boruta",      lambda: features_boruta.run(force=force)),

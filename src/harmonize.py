@@ -105,6 +105,24 @@ def complete_followup_mask(age_mo: pd.Series,
     return age.ge(min_months) & age.lt(config.RECENCY_MONTHS)
 
 
+def care_module_mask(raw: pd.DataFrame) -> pd.Series:
+    """Births with consistently administered pregnancy/delivery questions.
+
+    Across these BDHS phases, antenatal variables such as ``m14`` are recorded
+    for the most recent birth. In 2022 the maternity module was additionally
+    limited to the random long-questionnaire subsample. Item response (for
+    example non-missing ``m15``) must not define eligibility because doing so
+    preferentially excludes records with genuine item nonresponse.
+    """
+    year = pd.to_numeric(raw["survey_year"], errors="coerce")
+    birth_index = pd.to_numeric(raw["bidx"], errors="coerce")
+    if "sqtype" in raw:
+        questionnaire = pd.to_numeric(raw["sqtype"], errors="coerce")
+    else:
+        questionnaire = pd.Series(np.nan, index=raw.index)
+    return birth_index.eq(1) & (year.ne(config.TEST_YEAR) | questionnaire.eq(1))
+
+
 def cohort_counts(df: pd.DataFrame) -> pd.DataFrame:
     """Unweighted per-round cohort arithmetic used by tests and verification."""
     grouped = df.groupby(config.YEAR_COL, sort=True)[config.TARGET]
@@ -131,16 +149,16 @@ def derive_skilled_attendant(raw: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def harmonize(force: bool = False, module_only: bool = True,
+def harmonize(force: bool = False, module_only: bool = False,
               min_followup_months: int = config.MIN_FOLLOWUP_MONTHS) -> pd.DataFrame:
     """Harmonised analytic table.
 
-    module_only=True  (default, used by the ML pipeline): recent births WITH the
-      maternal-care module, so care variables are consistent across rounds.
-    module_only=False (used by trends.py for a representative NMR denominator):
-      all recent births regardless of the module.
+    module_only=False (default, used by the primary prediction and trend
+      analyses): all recent births with complete neonatal follow-up.
+    module_only=True (sensitivity analyses only): most recent births with the
+      maternal-care module; in 2022 this also requires the long questionnaire.
     """
-    cohort = "analytic" if module_only else "analytic_allrecent"
+    cohort = "analytic_care_module" if module_only else "analytic_allrecent"
     suffix = "" if min_followup_months == config.MIN_FOLLOWUP_MONTHS \
         else f"_minfollowup{min_followup_months}"
     cache = config.DATA_INTERIM / f"{cohort}{suffix}.parquet"
@@ -165,6 +183,7 @@ def harmonize(force: bool = False, module_only: bool = True,
     out[config.STRATUM_COL] = (
         year.astype(str) + "_" + raw["v022"].astype("Int64").astype(str)
     )
+    out["birth_index"] = pd.to_numeric(raw["bidx"], errors="coerce")
     out["age_mo"] = raw["v008"] - raw["b3"]           # months since birth at interview
     if "b19" in raw:
         # Day-sensitive completed age, available only in newer DHS rounds.
@@ -183,7 +202,7 @@ def harmonize(force: bool = False, module_only: bool = True,
     out["multiple_birth"] = (raw["b0"].fillna(0) > 0).astype(int)
     out["birth_order"] = pd.to_numeric(raw["bord"], errors="coerce")
     bi = pd.to_numeric(raw["b11"], errors="coerce")
-    out["firstborn"] = raw["b11"].isna().astype(int)
+    out["firstborn"] = out["birth_order"].eq(1).astype(int)
     out["birth_interval"] = bi                          # NaN for firstborns (flagged above)
     # NOTE: birth_size (m18) is DROPPED -- 100% missing in the 2017-18 BR file, so it
     # cannot be used consistently across the training rounds (>90%-missing rule).
@@ -249,19 +268,13 @@ def harmonize(force: bool = False, module_only: bool = True,
     wt = pd.to_numeric(raw["v005"], errors="coerce") / 1_000_000.0
     out[config.WEIGHT_COL] = wt / wt.groupby(year).transform("mean")
 
-    # Module marker: was the maternal-care module administered for this birth?
-    # In 2022 this is exactly the long-questionnaire subsample, not merely a
-    # most-recent-birth restriction. The standard women's weight (v005) is the
-    # only individual weight supplied and is normalized within survey round.
-    out["_module"] = raw["m15"].notna().to_numpy()
+    # Design-based module marker. Never infer administration from item response.
+    out["_module"] = care_module_mask(raw).to_numpy()
 
     # ---- sample restriction ---------------------------------------------- #
-    # Births in the last RECENCY_MONTHS AND with the maternal-care module observed
-    # In 2022 this selects the random long-questionnaire household subsample.
-    # The module restriction makes the
-    # care variables (ANC, delivery, C-section, attendant) consistently measured
-    # across all four rounds, so a temporal model is not fed round-dependent
-    # missingness. See docs / plan for the rationale.
+    # The primary cohort contains all births meeting the time/outcome rule. The
+    # optional care cohort is deliberately separate because conditioning on the
+    # most recent birth can depend on fertility after the indexed outcome.
     before = len(out)
     keep = (complete_followup_mask(out["age_mo"], min_followup_months)
             & out[config.TARGET].notna())

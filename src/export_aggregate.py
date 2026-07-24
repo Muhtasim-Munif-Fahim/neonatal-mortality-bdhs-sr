@@ -56,12 +56,13 @@ def run() -> None:
     _calibration_table(pred).to_csv(OUT / "figure2_calibration_bins.csv", index=False)
 
     curated = [
-        "cohort_definition.csv", "forward_validation.csv", "pipeline_lock.json",
+        "cohort_definition.csv", "figure1_flow.csv", "forward_validation.csv", "pipeline_lock.json",
         "primary_performance_uncertainty.csv", "primary_recalibration.csv",
         "table1_cohort_characteristics.csv", "shap_temporal.csv",
         "table3_nmr_trend.csv", "table3b_prevalence.csv",
         "table5_decomposition.csv", "table5b_decomposition_care_module.csv",
         "table8_subgroups.csv", "table10_survey_weighted_native.csv",
+        "table11_predictor_scope_sensitivity.csv",
     ]
     for name in curated:
         src = config.RESULTS / name

@@ -12,7 +12,7 @@ from src import viz
 BOXES = [
     ("4 BDHS Births Recode files\n(2011, 2014, 2017-18, 2022)", 0.5, 0.94, viz.PALETTE[0]),
     ("Outcome: death on days 0-27\n(b6=100-127); invalid ages excluded", 0.5, 0.82, viz.PALETTE[2]),
-    ("Complete follow-up: age 2-35 mo\n+ care-module/2022 long questionnaire", 0.5, 0.70, viz.PALETTE[2]),
+    ("Complete follow-up: age 2-35 mo\nall eligible births; birth-time predictors", 0.5, 0.70, viz.PALETTE[2]),
     ("Forward selection: 2011->2014 and\n2011+2014->2017-18", 0.5, 0.58, viz.PALETTE[2]),
     ("Fold-local imputation/encoding\n+ PSU-grouped inner tuning", 0.5, 0.46, viz.PALETTE[1]),
     ("Rank 7 pipelines by mean AP;\nnear tie -> Brier -> simplicity\nselection uses 2011-2017/18 only",

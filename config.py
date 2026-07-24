@@ -64,7 +64,7 @@ STRATUM_COL = "stratum"       # from v022, made unique per round
 WEIGHT_COL = "weight"         # normalized survey weight (mean 1 within round)
 # Non-predictor bookkeeping columns carried alongside the features.
 META_COLS = [YEAR_COL, CLUSTER_COL, STRATUM_COL, WEIGHT_COL, "age_mo", "age_completed_mo",
-             "questionnaire_type", TARGET]
+             "birth_index", "questionnaire_type", TARGET]
 
 # --------------------------------------------------------------------------- #
 # Variable groups (DHS recode names). Harmonisation maps these to a common
@@ -74,7 +74,7 @@ META_COLS = [YEAR_COL, CLUSTER_COL, STRATUM_COL, WEIGHT_COL, "age_mo", "age_comp
 DESIGN_VARS = ["v001", "v005", "v021", "v022", "v023", "v024", "v025", "sqtype"]
 
 # Columns required to build the outcome + the recency restriction.
-OUTCOME_SOURCE_VARS = ["b3", "b5", "b6", "b7", "b19", "v008", "v011"]
+OUTCOME_SOURCE_VARS = ["bidx", "b3", "b5", "b6", "b7", "b19", "v008", "v011"]
 
 # Candidate predictor source columns (subset kept if present in a given round).
 PREDICTOR_SOURCE_VARS = [

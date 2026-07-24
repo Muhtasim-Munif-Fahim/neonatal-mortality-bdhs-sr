@@ -109,9 +109,71 @@ def build() -> pd.DataFrame:
     eva = df[df[config.YEAR_COL] == config.TEST_YEAR]
     dev_label = "Development (2011-2017/18)"
     eva_label = "Evaluation (2022)"
-    left = pd.DataFrame(_period_summary(dev, dev_label))
-    right = pd.DataFrame(_period_summary(eva, eva_label))
-    tab = left.merge(right, on=["variable", "level"], how="outer")
+
+    def continuous(section, label, column, left=dev, right=eva, mask_left=None,
+                   mask_right=None):
+        a = pd.to_numeric(left[column], errors="coerce")
+        b = pd.to_numeric(right[column], errors="coerce")
+        ma = a.notna() if mask_left is None else a.notna() & mask_left
+        mb = b.notna() if mask_right is None else b.notna() & mask_right
+        am, asd = _wmean_sd(a[ma].to_numpy(), left.loc[ma, config.WEIGHT_COL].to_numpy())
+        bm, bsd = _wmean_sd(b[mb].to_numpy(), right.loc[mb, config.WEIGHT_COL].to_numpy())
+        pooled = np.sqrt((asd ** 2 + bsd ** 2) / 2)
+        smd = (bm - am) / pooled if pooled > 0 else np.nan
+        return {"section": section, "characteristic": label, "statistic": "mean (SD)",
+                dev_label: f"{am:.1f} ({asd:.1f})", eva_label: f"{bm:.1f} ({bsd:.1f})",
+                "weighted_SMD": round(smd, 3)}
+
+    def binary(section, label, left_values, right_values):
+        a = pd.to_numeric(left_values, errors="coerce")
+        b = pd.to_numeric(right_values, errors="coerce")
+        oka, okb = a.notna(), b.notna()
+        wa = dev.loc[oka, config.WEIGHT_COL].to_numpy()
+        wb = eva.loc[okb, config.WEIGHT_COL].to_numpy()
+        pa = np.average(a[oka], weights=wa)
+        pb = np.average(b[okb], weights=wb)
+        pooled = np.sqrt((pa * (1 - pa) + pb * (1 - pb)) / 2)
+        smd = (pb - pa) / pooled if pooled > 0 else np.nan
+        return {"section": section, "characteristic": label,
+                "statistic": "n (weighted %)",
+                dev_label: f"{int(a[oka].sum()):,} ({100 * pa:.1f}%)",
+                eva_label: f"{int(b[okb].sum()):,} ({100 * pb:.1f}%)",
+                "weighted_SMD": round(smd, 3)}
+
+    rows = [
+        {"section": "Cohort", "characteristic": "Survey rounds", "statistic": "years",
+         dev_label: "2011, 2014, 2017-18", eva_label: "2022", "weighted_SMD": np.nan},
+        {"section": "Cohort", "characteristic": "Live births", "statistic": "n",
+         dev_label: f"{len(dev):,}", eva_label: f"{len(eva):,}", "weighted_SMD": np.nan},
+        {"section": "Cohort", "characteristic": "Neonatal deaths", "statistic": "n",
+         dev_label: f"{int(dev[config.TARGET].sum()):,}",
+         eva_label: f"{int(eva[config.TARGET].sum()):,}", "weighted_SMD": np.nan},
+        {"section": "Cohort", "characteristic": "Neonatal mortality",
+         "statistic": "weighted per 1,000",
+         dev_label: f"{1000 * np.average(dev[config.TARGET], weights=dev[config.WEIGHT_COL]):.1f}",
+         eva_label: f"{1000 * np.average(eva[config.TARGET], weights=eva[config.WEIGHT_COL]):.1f}",
+         "weighted_SMD": np.nan},
+        continuous("Primary birth-history predictors", "Maternal age at birth, years", "mother_age"),
+        continuous("Primary birth-history predictors", "Birth order", "birth_order"),
+        continuous("Primary birth-history predictors", "Preceding birth interval, months",
+                   "birth_interval", mask_left=dev["firstborn"].eq(0),
+                   mask_right=eva["firstborn"].eq(0)),
+        binary("Primary birth-history predictors", "First birth", dev["firstborn"], eva["firstborn"]),
+        binary("Primary birth-history predictors", "Male infant", dev["sex"].eq("male").astype(int),
+               eva["sex"].eq("male").astype(int)),
+        binary("Primary birth-history predictors", "Multiple birth", dev["multiple_birth"],
+               eva["multiple_birth"]),
+        binary("Survey-time context (sensitivity only)", "Mother completed secondary or higher education",
+               dev["mother_edu"].isin(["secondary", "higher"]).astype(int),
+               eva["mother_edu"].isin(["secondary", "higher"]).astype(int)),
+        binary("Survey-time context (sensitivity only)", "Poorest wealth quintile",
+               dev["wealth"].eq("poorest").astype(int), eva["wealth"].eq("poorest").astype(int)),
+        binary("Survey-time context (sensitivity only)", "Rural residence",
+               dev["residence"].eq("rural").astype(int), eva["residence"].eq("rural").astype(int)),
+        binary("Survey-time context (sensitivity only)", "Improved sanitation",
+               dev["sanitation_improved"], eva["sanitation_improved"]),
+    ]
+    tab = pd.DataFrame(rows)
     tab.to_csv(config.RESULTS / "table1_cohort_characteristics.csv", index=False)
     build_outcome_stratified()
     print(f"  Table 1 -> table1_cohort_characteristics.csv ({len(dev):,} vs {len(eva):,})")

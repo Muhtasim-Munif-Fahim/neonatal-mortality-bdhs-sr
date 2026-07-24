@@ -1,7 +1,7 @@
 """
 TRIPOD-style participant flow diagram (rendered from the actual analytic table).
 
-Counts are read from data/interim/analytic.parquet + the pooled raw + recency
+Counts are read from the pooled raw and harmonised analytic extracts,
 extract, so the figure stays consistent with the pipeline.
 
 Run: python -m src.flow_fig
@@ -22,16 +22,17 @@ def _counts():
     window = age.ge(config.MIN_FOLLOWUP_MONTHS) & age.lt(config.RECENCY_MONTHS)
     outcome = derive_neonatal_outcome(raw)
     invalid_in_window = int((window & outcome.isna()).sum())
-    recent = harmonize(module_only=False)      # recency only
-    analytic = harmonize(module_only=True)      # recency + module (ML sample)
+    analytic = harmonize(module_only=False)     # primary all-recent cohort
+    care = harmonize(module_only=True)          # most-recent care sensitivity
     tr = analytic[analytic[config.YEAR_COL].isin(config.TRAIN_YEARS)]
     te = analytic[analytic[config.YEAR_COL] == config.TEST_YEAR]
     return {
         "pooled": len(raw),
         "outside_window": int((~window).sum()),
         "invalid_outcome": invalid_in_window,
-        "recent": len(recent),
+        "recent": len(analytic),
         "analytic": len(analytic), "analytic_d": int(analytic[config.TARGET].sum()),
+        "care": len(care), "care_d": int(care[config.TARGET].sum()),
         "train": len(tr), "train_d": int(tr[config.TARGET].sum()),
         "test": len(te), "test_d": int(te[config.TARGET].sum()),
     }
@@ -39,16 +40,26 @@ def _counts():
 
 def run():
     c = _counts()
+    pd.DataFrame([
+        {"stage": "Pooled Births Recode records", "n": c["pooled"], "deaths": pd.NA},
+        {"stage": "Outside complete-follow-up window", "n": c["outside_window"], "deaths": pd.NA},
+        {"stage": "Unclassifiable death age within window", "n": c["invalid_outcome"], "deaths": pd.NA},
+        {"stage": "Primary all-recent cohort", "n": c["analytic"], "deaths": c["analytic_d"]},
+        {"stage": "Development rounds", "n": c["train"], "deaths": c["train_d"]},
+        {"stage": "2022 temporal evaluation", "n": c["test"], "deaths": c["test_d"]},
+        {"stage": "Care-enriched sensitivity", "n": c["care"], "deaths": c["care_d"]},
+    ]).to_csv(config.RESULTS / "figure1_flow.csv", index=False)
     boxes = [
         (f"Pooled Births Recode, 4 BDHS rounds\n{c['pooled']:,} live births", 0.35, 0.90),
         (f"Complete neonatal follow-up:\ncalendar-month age 2-35;\nvalid b6 if deceased\n{c['recent']:,}", 0.35, 0.66),
-        (f"Prediction cohort: care-module births\n(2022 random long-questionnaire subsample)\n"
+        (f"Primary prediction cohort: all eligible births\n"
          f"{c['analytic']:,} ({c['analytic_d']} neonatal deaths)", 0.35, 0.40),
     ]
     excl = [
         (f"Excluded: outside age 2-35\ncalendar-month window\n({c['outside_window']:,})", 0.80, 0.82),
         (f"Excluded: unclassifiable\nage at death\n({c['invalid_outcome']:,})", 0.80, 0.70),
-        (f"Excluded: maternal-care module\nnot administered\n({c['recent']-c['analytic']:,})",
+        (f"Care-enriched sensitivity:\nmost recent birth; 2022 long form\n"
+         f"{c['care']:,} ({c['care_d']} deaths)",
          0.80, 0.53),
     ]
     splits = [
