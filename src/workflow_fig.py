@@ -38,8 +38,7 @@ def run():
         y1 = BOXES[i + 1][2] + 0.035
         ax.annotate("", xy=(0.5, y1), xytext=(0.5, y0),
                     arrowprops=dict(arrowstyle="-|>", color="#555", lw=1.3))
-    ax.set_title("Neonatal-mortality prediction pipeline (pooled BDHS 2011-2022)",
-                 fontsize=11)
+    # in-image title removed for journal style; caption carries it
     viz.save(fig, "fig1_workflow.png")
 
 

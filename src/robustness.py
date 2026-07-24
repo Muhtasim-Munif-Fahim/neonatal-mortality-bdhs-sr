@@ -138,8 +138,7 @@ def _fig_balancing(y, curves):
         ax.plot(mean_pred, frac, "o-", color=viz.PALETTE[i], lw=1.6,
                 label=f"{name} (Brier {brier_score_loss(y, p):.3f})")
     ax.plot([0, 0.2], [0, 0.2], "k--", lw=0.8)
-    ax.set(xlabel="mean predicted risk (raw)", ylabel="observed frequency",
-           title="Balancing strategy vs raw calibration (2022)")
+    ax.set(xlabel="mean predicted risk (raw)", ylabel="observed frequency")
     ax.legend(fontsize=8)
     viz.save(fig, "fig10_balancing_calibration.png")
 

@@ -167,12 +167,10 @@ def _fig_roc_pr(preds, feature_set):
         ax2.plot(rec, prec, color=c, lw=1.6,
                  label=f"{model} ({average_precision_score(y, p):.2f})")
     ax1.plot([0, 1], [0, 1], "k--", lw=0.8)
-    ax1.set(xlabel="1 - specificity", ylabel="sensitivity",
-            title=f"ROC -- 2022 evaluation ({feature_set} features)")
+    ax1.set(xlabel="1 - specificity", ylabel="sensitivity")
     ax1.legend(fontsize=8, title="AUROC")
     ax2.axhline(y.mean(), ls="--", c="k", lw=0.8, label=f"prevalence {y.mean():.3f}")
-    ax2.set(xlabel="recall", ylabel="precision",
-            title=f"Precision-Recall -- 2022 evaluation ({feature_set} features)")
+    ax2.set(xlabel="recall", ylabel="precision")
     ax2.legend(fontsize=8, title="AP")
     viz.save(fig, "fig3_roc_pr.png")
 
@@ -256,8 +254,7 @@ def _fig_calibration_dca(best):
         ax1.plot(mean_pred, frac, "o-", color=c, lw=1.6,
                  label=f"{lab} (Brier {brier_score_loss(yte, p):.3f})")
     ax1.plot([0, 0.2], [0, 0.2], "k--", lw=0.8)
-    ax1.set(xlabel="mean predicted risk", ylabel="observed frequency",
-            title=f"Calibration -- {best['model']} on 2022")
+    ax1.set(xlabel="mean predicted risk", ylabel="observed frequency")
     ax1.legend(fontsize=8)
 
     viz.save(fig, "fig4_calibration.png")
@@ -269,8 +266,7 @@ def _fig_calibration_dca(best):
     ax2.plot(thr, _net_benefit(yte, np.ones_like(yte, float), thr),
              color=viz.PALETTE[7], lw=1.0, ls="--", label="treat all")
     ax2.axhline(0, color="k", lw=1.0, label="treat none")
-    ax2.set(xlabel="threshold probability", ylabel="net benefit",
-            title="Decision-curve analysis -- 2022")
+    ax2.set(xlabel="threshold probability", ylabel="net benefit")
     ax2.set_ylim(-0.01, max(yte.mean() * 1.2, 0.01))
     ax2.legend(fontsize=8)
     viz.save(fig, "figS_decision_curve.png")

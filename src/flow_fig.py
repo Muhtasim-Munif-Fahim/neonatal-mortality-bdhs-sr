@@ -96,7 +96,7 @@ def run():
         ax.annotate("", xy=(x1, 0.19), xytext=(0.35, 0.35),
                     arrowprops=dict(arrowstyle="-|>", color="#555", lw=1.3))
 
-    ax.set_title("Participant flow", fontsize=12)
+    # in-image title removed for journal style; caption carries it
     viz.save(fig, "fig0_flow.png")
 
 

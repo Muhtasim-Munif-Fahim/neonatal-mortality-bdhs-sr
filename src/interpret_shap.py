@@ -83,7 +83,7 @@ def run():
     shap.summary_plot(test_values, transformed_test, feature_names=pretty,
                       show=False, max_display=TOP_N)
     fig = viz.plt.gcf()
-    fig.suptitle(f"Attribution in the 2022 temporal evaluation ({model_name})", y=1.02)
+    # in-image title removed for journal style; caption carries it
     viz.save(fig, "fig5_shap_beeswarm.png")
 
     per_round = {}
@@ -107,7 +107,7 @@ def run():
     ax.set_yticks(range(len(importance))[::-1])
     ax.set_yticklabels(importance.index, fontsize=8)
     ax.set_xlabel("share of mean absolute SHAP value within round")
-    ax.set_title(f"Round-specific attribution profiles ({model_name})")
+    # in-image title removed for journal style; caption carries it
     ax.legend(title="BDHS round", fontsize=8)
     viz.save(fig, "fig6_shap_temporal.png")
 

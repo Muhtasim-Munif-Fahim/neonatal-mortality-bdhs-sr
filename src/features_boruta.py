@@ -92,7 +92,7 @@ def _plot(X, y, names, boruta, rf):
     ax.set_yticklabels([names[i].replace("num__", "").replace("cat__", "")
                         for i in order], fontsize=8)
     ax.set_xlabel("Random-forest importance")
-    ax.set_title("Boruta feature selection (training rounds 2011-2017)")
+    # in-image title removed for journal style; caption carries it
     handles = [viz.plt.Rectangle((0, 0), 1, 1, color=c) for c in
                (colour["confirmed"], colour["tentative"], colour["rejected"])]
     ax.legend(handles, ["confirmed", "tentative", "rejected"], loc="lower right")

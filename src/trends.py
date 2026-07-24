@@ -129,8 +129,7 @@ def _fig_nmr(tab):
     for _, r in tab.iterrows():
         ax.annotate(f"{r['NMR']:.0f}", (r["year"], r["NMR"]),
                     textcoords="offset points", xytext=(0, 9), ha="center", fontsize=9)
-    ax.set(xlabel="BDHS survey year", ylabel="neonatal deaths / 1000 live births",
-           title="Neonatal mortality trend, Bangladesh 2011-2022")
+    ax.set(xlabel="BDHS survey year", ylabel="neonatal deaths / 1000 live births")
     ax.set_xticks(_ROUNDS)
     ax.set_ylim(0, max(tab["ci_high"]) * 1.15)
     ax.legend(fontsize=9)
@@ -225,8 +224,7 @@ def _fig_prevalence(df, E):
         ax.plot(_ROUNDS, prev, marker=markers[i], linestyle=linestyles[i],
                 color=viz.PALETTE[i % len(viz.PALETTE)], lw=1.6,
                 label=EXPOSURE_LABELS[col])
-    ax.set(xlabel="BDHS survey year", ylabel="weighted prevalence (%)",
-           title="Risk-factor / coverage prevalence trends, 2011-2022")
+    ax.set(xlabel="BDHS survey year", ylabel="weighted prevalence (%)")
     ax.set_xticks(_ROUNDS)
     ax.legend(fontsize=7, ncol=2, loc="upper left")
     viz.save(fig, "fig8_riskfactor_trends.png")
@@ -376,8 +374,7 @@ def _fig_decomposition(point, ci, tag="primary"):
                     ha="center", fontsize=10)
     ax.axhline(0, color="k", lw=0.8)
     suffix = "" if tag == "primary" else " (care-module sensitivity)"
-    ax.set(ylabel="contribution to NMR change (per 1000)",
-           title=f"Decomposition of the 2011->2022 NMR decline{suffix}")
+    ax.set(ylabel="contribution to NMR change (per 1000)")
     fname = "fig9_decomposition.png" if tag == "primary" else f"fig9b_decomposition_{tag}.png"
     viz.save(fig, fname)
 
