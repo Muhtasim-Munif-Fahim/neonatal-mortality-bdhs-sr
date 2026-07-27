@@ -113,6 +113,11 @@ def nmr_trend() -> pd.DataFrame:
     apc = (np.exp(beta) - 1) * 100
     tab.attrs["trend"] = {"log_or_per_year": beta, "annual_pct_change_odds": apc, "p": p}
     tab.to_csv(config.RESULTS / "table3_nmr_trend.csv", index=False)
+    # Persist the trend test to disk (tab.attrs is in-memory only and would
+    # otherwise be lost as soon as this DataFrame is read back from CSV).
+    pd.DataFrame([{"log_odds_per_year": beta, "annual_pct_change_odds": apc,
+                  "bootstrap_p": p, "n_boot": N_BOOT}]).to_csv(
+        config.RESULTS / "table3_nmr_trend_test.csv", index=False)
     print(f"  A. NMR {tab['NMR'].iloc[0]:.1f} -> {tab['NMR'].iloc[-1]:.1f}/1000; "
           f"odds {apc:+.1f}%/yr, p={p:.3f}")
     _fig_nmr(tab)

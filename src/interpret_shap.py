@@ -24,6 +24,7 @@ from src.preprocess import clean, primary_feature_cols, primary_frame
 
 TREE_MODELS = {"DT", "RF", "XGB", "CatBoost"}
 TOP_N = 12
+SHAP_ROWS_PER_ROUND = 2_000
 
 
 def _apply_transformers(pipe, X):
@@ -58,6 +59,14 @@ def _shap_values(explainer, Xt):
     return values
 
 
+def _sample_rows(frame: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """Deterministically cap descriptive attribution workload per survey round."""
+    if len(frame) <= SHAP_ROWS_PER_ROUND:
+        return frame
+    selected = rng.choice(len(frame), SHAP_ROWS_PER_ROUND, replace=False)
+    return frame.iloc[np.sort(selected)]
+
+
 def run():
     lock = json.loads((config.RESULTS / "pipeline_lock.json").read_text())
     model_name = lock["model"]
@@ -76,9 +85,11 @@ def run():
                       replace=False)
     explainer = _make_explainer(model_name, pipe.named_steps["clf"],
                                 transformed_train[take])
-    transformed_test = _apply_transformers(pipe, test[feature_cols])
+    test_for_shap = _sample_rows(test, rng)
+    transformed_test = _apply_transformers(pipe, test_for_shap[feature_cols])
     test_values = _shap_values(explainer, transformed_test)
-    print(f"  SHAP on locked model: {model_name} [{lock['feature_set']}]")
+    print(f"  SHAP on locked model: {model_name} [{lock['feature_set']}]; "
+          f"up to {SHAP_ROWS_PER_ROUND:,} deterministic records per round")
 
     shap.summary_plot(test_values, transformed_test, feature_names=pretty,
                       show=False, max_display=TOP_N)
@@ -88,7 +99,7 @@ def run():
 
     per_round = {}
     for year in config.TRAIN_YEARS:
-        rows = train.loc[train[config.YEAR_COL] == year, feature_cols]
+        rows = _sample_rows(train.loc[train[config.YEAR_COL] == year, feature_cols], rng)
         values = _shap_values(explainer, _apply_transformers(pipe, rows))
         per_round[year] = np.abs(values).mean(axis=0)
     per_round[config.TEST_YEAR] = np.abs(test_values).mean(axis=0)

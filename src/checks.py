@@ -130,6 +130,37 @@ def run() -> bool:
     else:
         lines.append("[SKIP] trend checks (run src.trends first)")
 
+    # 7. adjusted-association outputs (present only after src.associations has run)
+    or_path = config.RESULTS / "table_adjusted_or.csv"
+    if or_path.exists():
+        orr = pd.read_csv(or_path)
+        check("adjusted odds ratios are finite and positive",
+              bool(np.isfinite(orr["adjusted_OR"]).all() and (orr["adjusted_OR"] > 0).all()))
+        check("adjusted-OR confidence intervals are ordered (low <= OR <= high)",
+              bool((orr["ci_low"] <= orr["adjusted_OR"]).all()
+                   and (orr["adjusted_OR"] <= orr["ci_high"]).all()))
+        continuous_units = {"per year", "per additional birth", "per 12 months",
+                            "per additional child"}
+        categorical = orr[~orr["level"].isin(continuous_units)]
+        check("every categorical/binary adjusted-OR term declares a reference level",
+              bool((categorical["reference"].notna() & (categorical["reference"] != "")).all()))
+        num_cols, nom_cols = primary_feature_cols()
+        or_predictors = set(orr["predictor"])
+        # Children ever born is deliberately excluded from this model: it correlates
+        # with birth order at r=0.98 (VIF 32), so both cannot be entered together
+        # without producing uninterpretable compensating coefficients (see
+        # src/associations.py and the manuscript's Adjusted associations Methods).
+        expected_labels = {"Maternal age at birth", "Birth order", "Preceding birth interval",
+                           "Multiple birth", "Improved drinking water",
+                           "Improved sanitation", "Any media exposure", "Maternal education",
+                           "Household wealth quintile", "Infant sex", "Religion", "Residence",
+                           "Division"}
+        check("adjusted-OR terms cover every primary risk-factor predictor",
+              expected_labels.issubset(or_predictors),
+              ",".join(sorted(expected_labels - or_predictors)) or "complete")
+    else:
+        lines.append("[SKIP] adjusted-association checks (run src.associations first)")
+
     # Machine-readable cohort definition and requested one-month sensitivity.
     cohort_rows = []
     for name, module, min_followup in [

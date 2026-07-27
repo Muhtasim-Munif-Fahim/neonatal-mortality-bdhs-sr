@@ -16,9 +16,9 @@ import time
 
 
 def main(force: bool = False) -> None:
-    from src import (checks, descriptives, evaluate, export_aggregate, features_boruta, flow_fig,
-                     harmonize, interpret_shap, load, modeling, preprocess, robustness,
-                     trends, workflow_fig)
+    from src import (associations, checks, descriptives, evaluate, export_aggregate,
+                     features_boruta, figures_main, flow_fig, harmonize, interpret_shap,
+                     load, modeling, preprocess, robustness, trends, workflow_fig)
 
     steps = [
         ("00 load",        lambda: load.load_all(force=force)),
@@ -33,11 +33,13 @@ def main(force: bool = False) -> None:
         ("06 shap",        lambda: interpret_shap.run()),
         ("07 trends",      lambda: trends.run()),
         ("08 robustness",  lambda: robustness.run()),
+        ("09 associations", lambda: associations.run(force=force)),
         ("   table1",      lambda: descriptives.build()),
         ("   fig1",        lambda: workflow_fig.run()),
         ("   flow",        lambda: flow_fig.run()),
-        ("   checks",      lambda: checks.run()),
         ("   aggregate",   lambda: export_aggregate.run()),
+        ("   figures_main", lambda: figures_main.run()),
+        ("   checks",      lambda: checks.run()),
     ]
     for name, fn in steps:
         print(f"\n{'='*66}\n>>> {name}\n{'='*66}")
